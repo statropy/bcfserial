@@ -1,0 +1,15 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target = <&uart4>;
+		status = "okay";
+		__overlay__ {
+			hello-serdev {
+				compatible = "beagle,bcfserial";
+				status = "okay";
+			};
+		};
+	};
+};
