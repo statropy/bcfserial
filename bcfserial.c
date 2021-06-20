@@ -19,6 +19,10 @@ struct bcfserial {
 	struct ieee802154_hw *hw;
 };
 
+// TODO Add serial buffers and async workers for serdev
+
+// TODO Add HDLC parsing and packing
+
 static int tty_receive(struct serdev_device *serdev, 
 	const unsigned char *data, size_t count)
 {
@@ -40,6 +44,8 @@ static struct serdev_device_ops bcfserial_serdev_ops = {
 	.receive_buf = tty_receive,
 	.write_wakeup = tty_wakeup,
 };
+
+// TODO Add implementations for 802154 functions
 
 static int bcfserial_start(struct ieee802154_hw *hw)
 {
