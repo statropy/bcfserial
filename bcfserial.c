@@ -7,7 +7,6 @@
 #include <linux/serdev.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/module.h>
 
 #include <net/cfg802154.h>
 #include <net/mac802154.h>
@@ -49,7 +48,6 @@ static int bcfserial_start(struct ieee802154_hw *hw)
 
 static void bcfserial_stop(struct ieee802154_hw *hw)
 {
-	return 0;
 }
 
 static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
