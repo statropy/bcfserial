@@ -80,18 +80,19 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 
 static void bcfserial_uart_transmit(struct work_struct *work)
 {
-	struct bcfserial *bcfserial = container_of(work, struct bcfserial, tx_work);
-	int written;
+	printk("Worker!\n");
+	// struct bcfserial *bcfserial = container_of(work, struct bcfserial, tx_work);
+	// int written;
 
-	if (bcfserial->tx_remaining) {
-		written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_buffer,
-					  bcfserial->tx_remaining);
-		if (written > 0) {
-			printk("Work send %d\n", written);
-			bcfserial->tx_head += written;
-			bcfserial->tx_remaining -= written;
-		}
-	}
+	// if (bcfserial->tx_remaining) {
+	// 	written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_head,
+	// 				  bcfserial->tx_remaining);
+	// 	if (written > 0) {
+	// 		printk("Work send %d\n", written);
+	// 		bcfserial->tx_head += written;
+	// 		bcfserial->tx_remaining -= written;
+	// 	}
+	// }
 }
 
 static void bcfserial_tty_wakeup(struct serdev_device *serdev)
@@ -192,7 +193,7 @@ static void bcfserial_hdlc_send_cmd(struct bcfserial *bcfserial, u8 cmd)
 static int bcfserial_start(struct ieee802154_hw *hw)
 {
 	struct bcfserial *bcfserial = hw->priv;
-	printk("Start\n");
+	printk("START\n");
 	bcfserial_hdlc_send_cmd(bcfserial, START);
 	return 0;
 }
@@ -200,7 +201,7 @@ static int bcfserial_start(struct ieee802154_hw *hw)
 static void bcfserial_stop(struct ieee802154_hw *hw)
 {
 	struct bcfserial *bcfserial = hw->priv;
-	printk("Stop\n");
+	printk("STOP\n");
 	bcfserial_hdlc_send_cmd(bcfserial, STOP);
 }
 
@@ -209,6 +210,8 @@ static void bcfserial_stop(struct ieee802154_hw *hw)
 static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
 	struct bcfserial *bcfserial = hw->priv;
+
+	printk("XMIT\n");
 
 	bcfserial->tx_skb = skb;
 	bcfserial->tx_ack_seq++;
@@ -219,11 +222,13 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 
 static int bcfserial_ed(struct ieee802154_hw *hw, u8 *level)
 {
+	printk("ED\n");
 	return 0;
 }
 
 static int bcfserial_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 {
+	printk("SET CHANNEL\n");
 	return 0;
 }
 
@@ -231,43 +236,51 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 			       	      struct ieee802154_hw_addr_filt *filt,
 			       	      unsigned long changed)
 {
+	printk("HW ADDR\n");
 	return 0;
 }
 
 static int bcfserial_set_txpower(struct ieee802154_hw *hw, s32 mbm)
 {
+	printk("SET TXPOWER\n");
 	return 0;
 }
 
 static int bcfserial_set_lbt(struct ieee802154_hw *hw, bool on)
 {
+	printk("SET LBT\n");
 	return 0;
 }
 
 static int bcfserial_set_cca_mode(struct ieee802154_hw *hw,
 			   const struct wpan_phy_cca *cca)
 {
+	printk("SET CCA MODE\n");
 	return 0;
 }
 
 static int bcfserial_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 {
+	printk("SET CCA ED LEVEL\n");
 	return 0;
 }
 
 static int bcfserial_set_csma_params(struct ieee802154_hw *hw, u8 min_be, u8 max_be, 
 			      u8 retries)
 {
+	printk("SET CSMA PARAMS\n");
 	return 0;
 }
 
 static int bcfserial_set_frame_retries(struct ieee802154_hw *hw, s8 retries)
 {
+	printk("SET FRAME RETRIES\n");
 	return 0;
 }
 
 static int bcfserial_set_promiscuous_mode(struct ieee802154_hw *hw, const bool on)
 {
+	printk("SET PROMISCUOUS\n");
 	return 0;
 }
 
@@ -339,15 +352,16 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	if (ret)
 		goto fail;
 
+	printk("kmalloc...\n");
 	bcfserial->tx_buffer = devm_kmalloc(&serdev->dev, MAX_TX_HDLC, GFP_KERNEL);
-
+	printk("kmalloc: %p\n", bcfserial->tx_buffer);
 	return 0;
 
 fail:
-	printk("Closing serial device on failure");
+	printk("Closing serial device on failure\n");
 	serdev_device_close(serdev);
 fail_hw:
-	printk("Closing wpan hw on failure");
+	printk("Closing wpan hw on failure\n");
 	ieee802154_free_hw(hw);
 	return ret;
 }
@@ -355,7 +369,7 @@ fail_hw:
 static void bcfserial_remove(struct serdev_device *serdev)
 {
 	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
-	printk("Closing serial device");
+	printk("Closing serial device\n");
 	cancel_work_sync(&bcfserial->tx_work);
 	serdev_device_close(serdev);
 	ieee802154_unregister_hw(bcfserial->hw);
