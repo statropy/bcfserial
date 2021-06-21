@@ -16,9 +16,9 @@
 #define BCFSERIAL_DRV_VERSION "0.1.0"
 #define BCFSERIAL_DRV_NAME "bcfserial"
 
-#define HDLC_FRAME      0x7E
-#define HDLC_ESC        0x7D
-#define HDLC_XOR        0x20
+#define HDLC_FRAME	0x7E
+#define HDLC_ESC	0x7D
+#define HDLC_XOR	0x20
 
 #define MAX_PSDU		127
 #define MAX_RX_XFER		(1 + MAX_PSDU + 2 + 1)	/* PHR+PSDU+CRC+LQI */
@@ -52,8 +52,9 @@ enum bcfserial_requests {
 struct bcfserial {
 	struct serdev_device *serdev;
 	struct ieee802154_hw *hw;
-	struct work_struct tx_work;
 
+	struct work_struct tx_work;
+	spinlock_t tx_lock;
 	struct sk_buff *tx_skb;
 	u8 tx_ack_seq;		/* current TX ACK sequence number */
 	u8 *tx_head;
@@ -83,19 +84,23 @@ static void bcfserial_uart_transmit(struct work_struct *work)
 	struct bcfserial *bcfserial = container_of(work, struct bcfserial, tx_work);
 	int written;
 
+	spin_lock_bh(&bcfserial->tx_lock);
+
 	if (bcfserial->tx_remaining) {
 		written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_head,
 	 				  bcfserial->tx_remaining);
 		if (written > 0) {
-			printk("Work send %d\n", written);
+			printk("Work sent %d\n", written);
 			bcfserial->tx_head += written;
 			bcfserial->tx_remaining -= written;
 
+			// TODO move to TX ack handler
 			if (bcfserial->tx_remaining <= 0) {
 				ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
 			}
 		}
 	}
+	spin_unlock_bh(&bcfserial->tx_lock);
 }
 
 static void bcfserial_tty_wakeup(struct serdev_device *serdev)
@@ -122,7 +127,7 @@ static void bcfserial_append_tx_u8(struct bcfserial *bcfserial, u8 value)
 		*bcfserial->tx_tail++ = HDLC_ESC;
 		value ^= HDLC_XOR;
 	}
-	*bcfserial->tx_tail++ = value^HDLC_XOR;
+	*bcfserial->tx_tail++ = value;
 }
 
 static void bcfserial_append_tx_buffer(struct bcfserial *bcfserial, const u8 *buffer, size_t len)
@@ -158,6 +163,8 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 	// contents
 	// x/y crc
 	// HDLC_FRAME
+
+	spin_lock(&bcfserial->tx_lock);
 	WARN_ON(bcfserial->tx_remaining);
 
 	bcfserial->tx_remaining = 0;
@@ -180,15 +187,20 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 	bcfserial->tx_remaining = bcfserial->tx_tail - bcfserial->tx_head;
 	written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_buffer,
 					  bcfserial->tx_remaining);
+
+	printk("Sending %d\n", bcfserial->tx_remaining);
+
 	if (written > 0) {
-		printk("Send %d\n", written);
+		printk("Sent %d\n", written);
 		bcfserial->tx_head += written;
 		bcfserial->tx_remaining -= written;
 
+		// TODO move to TX ACK handler
 		if (bcfserial->tx_remaining <= 0) {
 			ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
  		}
 	}
+	spin_unlock(&bcfserial->tx_lock);
 }
 
 static void bcfserial_hdlc_send_cmd(struct bcfserial *bcfserial, u8 cmd)
@@ -378,7 +390,9 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	if (ret)
 		goto fail;
 
+	spin_lock_init(&bcfserial->tx_lock);
 	bcfserial->tx_buffer = devm_kmalloc(&serdev->dev, MAX_TX_HDLC, GFP_KERNEL);
+	bcfserial->tx_remaining = 0;
 	return 0;
 
 fail:
