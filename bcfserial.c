@@ -80,19 +80,22 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 
 static void bcfserial_uart_transmit(struct work_struct *work)
 {
-	printk("Worker!\n");
-	// struct bcfserial *bcfserial = container_of(work, struct bcfserial, tx_work);
-	// int written;
+	struct bcfserial *bcfserial = container_of(work, struct bcfserial, tx_work);
+	int written;
 
-	// if (bcfserial->tx_remaining) {
-	// 	written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_head,
-	// 				  bcfserial->tx_remaining);
-	// 	if (written > 0) {
-	// 		printk("Work send %d\n", written);
-	// 		bcfserial->tx_head += written;
-	// 		bcfserial->tx_remaining -= written;
-	// 	}
-	// }
+	if (bcfserial->tx_remaining) {
+		written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_head,
+	 				  bcfserial->tx_remaining);
+		if (written > 0) {
+			printk("Work send %d\n", written);
+			bcfserial->tx_head += written;
+			bcfserial->tx_remaining -= written;
+
+			if (bcfserial->tx_remaining <= 0) {
+				ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
+			}
+		}
+	}
 }
 
 static void bcfserial_tty_wakeup(struct serdev_device *serdev)
@@ -174,12 +177,17 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 	bcfserial_append_tx_crc(bcfserial);
 	bcfserial_append_tx_frame(bcfserial);
 
+	bcfserial->tx_remaining = bcfserial->tx_tail - bcfserial->tx_head;
 	written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_buffer,
 					  bcfserial->tx_remaining);
 	if (written > 0) {
 		printk("Send %d\n", written);
 		bcfserial->tx_head += written;
-		bcfserial->tx_remaining = bcfserial->tx_tail - bcfserial->tx_head;
+		bcfserial->tx_remaining -= written;
+
+		if (bcfserial->tx_remaining <= 0) {
+			ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
+ 		}
 	}
 }
 
@@ -265,7 +273,7 @@ static int bcfserial_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 	return 0;
 }
 
-static int bcfserial_set_csma_params(struct ieee802154_hw *hw, u8 min_be, u8 max_be, 
+static int bcfserial_set_csma_params(struct ieee802154_hw *hw, u8 min_be, u8 max_be,
 			      u8 retries)
 {
 	printk("SET CSMA PARAMS\n");
@@ -309,6 +317,11 @@ static const struct of_device_id bcfserial_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, bcfserial_of_match);
 
+static const s32 channel_powers[] = {
+	300, 280, 230, 180, 130, 70, 0, -100, -200, -300, -400, -500, -700,
+	-900, -1200, -1700,
+};
+
 static int bcfserial_probe(struct serdev_device *serdev)
 {
 	struct ieee802154_hw *hw;
@@ -346,15 +359,26 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	serdev_device_set_flow_control(serdev, false);
 
 	// TODO connect with BeagleConnect Freedom using serial cmds
+	hw->flags = IEEE802154_HW_TX_OMIT_CKSUM | IEEE802154_HW_AFILT;
 
+	/* FIXME: these need to come from device capabilities */
+	hw->phy->flags = WPAN_PHY_FLAG_TXPOWER;
+
+	/* Set default and supported channels */
+	hw->phy->current_page = 0;
+	hw->phy->current_channel = 1; //set to lowest valid channel
+	hw->phy->supported.channels[0] = 0x07FFFFFF;
+
+	/* FIXME: these need to come from device capabilities */
+	hw->phy->supported.tx_powers = channel_powers;
+	hw->phy->supported.tx_powers_size = ARRAY_SIZE(channel_powers);
+	hw->phy->transmit_power = hw->phy->supported.tx_powers[0];
 
 	ret = ieee802154_register_hw(hw);
 	if (ret)
 		goto fail;
 
-	printk("kmalloc...\n");
 	bcfserial->tx_buffer = devm_kmalloc(&serdev->dev, MAX_TX_HDLC, GFP_KERNEL);
-	printk("kmalloc: %p\n", bcfserial->tx_buffer);
 	return 0;
 
 fail:
