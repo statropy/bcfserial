@@ -123,7 +123,8 @@ static void bcfserial_append_tx_u8(struct bcfserial *bcfserial, u8 value)
 
 static void bcfserial_append_tx_buffer(struct bcfserial *bcfserial, const u8 *buffer, size_t len)
 {
-	for(size_t i=0; i<len; i++) {
+	size_t i;
+	for (i=0; i<len; i++) {
 		bcfserial_append_tx_u8(bcfserial, buffer[i]);
 	}
 }
@@ -134,7 +135,7 @@ static void bcfserial_append_tx_le16(struct bcfserial *bcfserial, u16 value)
 	bcfserial_append_tx_buffer(bcfserial, (u8 *)&value, sizeof(u16));
 }
 
-static void bcfserial_append_crc(struct bcfserial *bcfserial, u16 value)
+static void bcfserial_append_tx_crc(struct bcfserial *bcfserial)
 {
 	bcfserial_append_tx_le16(bcfserial, bcfserial->tx_crc);
 }
@@ -212,7 +213,7 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 	bcfserial->tx_skb = skb;
 	bcfserial->tx_ack_seq++;
 
-	bcfserial_hdlc_send(bcfserial, TX, 0, bcfserial->tx_ack_seq, skb->len);
+	bcfserial_hdlc_send(bcfserial, TX, 0, bcfserial->tx_ack_seq, skb->len, skb->data);
 	return 0;
 }
 
@@ -301,7 +302,6 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	struct bcfserial *bcfserial = NULL;
 	u32 speed = 115200;
 	int ret;
-	size_t len;
 
 	printk("Loading bcfserial\n");
 
@@ -318,7 +318,7 @@ static int bcfserial_probe(struct serdev_device *serdev)
 
 	serdev_device_set_drvdata(serdev, bcfserial);
 	serdev_device_set_client_ops(serdev, &bcfserial_serdev_ops);
-	
+
 	ret = serdev_device_open(serdev);
 	if (ret) {
 		printk("Unable to open device\n");
@@ -354,8 +354,12 @@ fail_hw:
 
 static void bcfserial_remove(struct serdev_device *serdev)
 {
+	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
 	printk("Closing serial device");
+	cancel_work_sync(&bcfserial->tx_work);
 	serdev_device_close(serdev);
+	ieee802154_unregister_hw(bcfserial->hw);
+	ieee802154_free_hw(bcfserial->hw);
 }
 
 static struct serdev_device_driver bcfserial_driver = {
