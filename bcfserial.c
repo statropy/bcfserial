@@ -21,6 +21,10 @@
 #define HDLC_ESC	0x7D
 #define HDLC_XOR	0x20
 
+#define ADDRESS_CTRL	0x01
+#define ADDRESS_WPAN	0x03
+#define ADDRESS_CDC	0x05
+
 #define MAX_PSDU		127
 #define MAX_RX_XFER		(1 + MAX_PSDU + 2 + 1)	/* PHR+PSDU+CRC+LQI */
 #define HDLC_HEADER_LEN 	2
@@ -92,7 +96,7 @@ static void bcfserial_append_tx_frame(struct bcfserial *bcfserial)
 
 static void bcfserial_append_tx_u8(struct bcfserial *bcfserial, u8 value)
 {
-	bcfserial->crc = crc_ccitt(bcfserial->crc, &value, 1);
+	bcfserial->tx_crc = crc_ccitt(bcfserial->tx_crc, &value, 1);
 	if (value == HDLC_FRAME || value == HDLC_ESC) {
 		*bcfserial->tx_tail++ = HDLC_ESC;
 		value ^= HDLC_XOR;
@@ -316,26 +320,24 @@ static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, siz
 	}
 }
 
-static int bcfserial_tty_receive(struct serdev_device *serdev, 
+static int bcfserial_tty_receive(struct serdev_device *serdev,
 	const unsigned char *data, size_t count)
 {
 	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
 	u16 crc_check = 0;
-	u16 abort_size = 0;
 	size_t i;
 	u8 c;
 
+
 	for (i = 0; i < count; i++) {
 		c = data[i];
-	
+
 		if (c == HDLC_FRAME) {
 			if (bcfserial->rx_address != 0xFF) {
-
-				bcfserial->rx_crc = crc_ccitt(0xffff, &bcfserial->rx_address, 1);
-				bcfserial->rx_crc = crc_ccitt(bcfserial->rx_crc, bcfserial->rx_buffer, bcfserial->rx_offset);
+				crc_check = crc_ccitt(0xffff, &bcfserial->rx_address, 1);
+				crc_check = crc_ccitt(crc_check, bcfserial->rx_buffer, bcfserial->rx_offset);
 
 				if (crc_check == 0xf0b8) {
-					printk("RX HDLC: %u:%u \n", bcfserial->rx_address, bcfserial->rx_offset - 3);
 					// TODO send ACK packet - contention?
 
 					// if ((bcfserial->rx_buffer[0] & 1) == 0) {
@@ -363,24 +365,23 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 			bcfserial->rx_offset = 0;
 			bcfserial->rx_address = 0xFF;
 		} else if (c == HDLC_ESC) {
-			inEsc = TRUE;
+			bcfserial->rx_in_esc = 1;
 		} else {
-			if (inEsc) {
+			if (bcfserial->rx_in_esc) {
 				c ^= 0x20;
-				inEsc = FALSE;
+				bcfserial->rx_in_esc = 0;
 			}
 
 			if (bcfserial->rx_address == 0xFF) {
 				bcfserial->rx_address = c;
-				if (bcfserial->rx_address == ADDRESS_WPAN || 
-				   bcfserial->rx_address == ADDRESS_CDC ||
-				   bcfserial->rx_address == ADDRESS_HW) {
+				if (bcfserial->rx_address == ADDRESS_WPAN ||
+				   bcfserial->rx_address == ADDRESS_CDC) {
 				} else {
 					bcfserial->rx_address = 0xFF;
 				}
 					bcfserial->rx_offset = 0;
 			} else {
-				if (bcfserial->rx_offset < BUFFER_SIZE) {
+				if (bcfserial->rx_offset < MAX_RX_HDLC) {
 					bcfserial->rx_buffer[bcfserial->rx_offset] = c;
 					bcfserial->rx_offset++;
 				} else {
@@ -391,6 +392,8 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 			}
 		}
 	}
+
+	return count;
 }
 
 static void bcfserial_uart_transmit(struct work_struct *work)
@@ -504,6 +507,7 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	bcfserial->rx_buffer = devm_kmalloc(&serdev->dev, MAX_RX_HDLC, GFP_KERNEL);
 	bcfserial->rx_offset = 0;
 	bcfserial->rx_address = 0xff;
+	bcfserial->rx_in_esc = 0;
 	return 0;
 
 fail:
