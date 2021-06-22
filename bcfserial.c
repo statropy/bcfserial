@@ -2,6 +2,7 @@
 /*
  *  bcfserial.c - Serial interface driver for Beagle Connect Freedom.
  */
+#include <linux/crc-ccitt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -25,7 +26,9 @@
 #define HDLC_HEADER_LEN 	2
 #define PACKET_HEADER_LEN	8
 #define CRC_LEN 		2
+#define RX_HDLC_PAYLOAD		140
 #define MAX_TX_HDLC		(1 + HDLC_HEADER_LEN + PACKET_HEADER_LEN + MAX_RX_XFER + CRC_LEN + 1)
+#define MAX_RX_HDLC		(1 + RX_HDLC_PAYLOAD + CRC_LEN)
 
 enum bcfserial_requests {
 	RESET,
@@ -62,58 +65,25 @@ struct bcfserial {
 	int tx_remaining;
 	u8 *tx_buffer;
 	u16 tx_crc;
+
+	u8 rx_in_esc;
+	u8 rx_address;
+	u16 rx_offset;
+	u8 *rx_buffer;
 };
 
-// TODO Add serial buffers and async workers for serdev
+// RX Packet Format:
+// - WPAN RX PACKET:	[len] payload [lqi]
+// - WPAN TX ACK:	[seq]
+// - WPAN CAPABILITIES:	supported_channels_mask(4)
+// - CDC:		printable_chars
+
+// TX Packet Format:
+
 
 // TODO Add HDLC parsing and packing
-
-static int bcfserial_tty_receive(struct serdev_device *serdev, 
-	const unsigned char *data, size_t count)
-{
-	// struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
-	// size_t i;
-
-	count = serdev_device_write_buf(serdev, data, count);
-	printk("Echo %u\n", count);
-	return count;
-}
-
-static void bcfserial_uart_transmit(struct work_struct *work)
-{
-	struct bcfserial *bcfserial = container_of(work, struct bcfserial, tx_work);
-	int written;
-
-	spin_lock_bh(&bcfserial->tx_lock);
-
-	if (bcfserial->tx_remaining) {
-		written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_head,
-	 				  bcfserial->tx_remaining);
-		if (written > 0) {
-			printk("Work sent %d\n", written);
-			bcfserial->tx_head += written;
-			bcfserial->tx_remaining -= written;
-
-			// TODO move to TX ack handler
-			if (bcfserial->tx_remaining <= 0) {
-				ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
-			}
-		}
-	}
-	spin_unlock_bh(&bcfserial->tx_lock);
-}
-
-static void bcfserial_tty_wakeup(struct serdev_device *serdev)
-{
-	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
-
-	schedule_work(&bcfserial->tx_work);
-}
-
-static struct serdev_device_ops bcfserial_serdev_ops = {
-	.receive_buf = bcfserial_tty_receive,
-	.write_wakeup = bcfserial_tty_wakeup,
-};
+// - explore using ieee802154_wake_queue in bcfserial_uart_transmit (see qca)
+// - Always require ACK? (not supported correctly in wpanusb_bc)
 
 static void bcfserial_append_tx_frame(struct bcfserial *bcfserial)
 {
@@ -122,7 +92,7 @@ static void bcfserial_append_tx_frame(struct bcfserial *bcfserial)
 
 static void bcfserial_append_tx_u8(struct bcfserial *bcfserial, u8 value)
 {
-	// TODO Update CRC
+	bcfserial->crc = crc_ccitt(bcfserial->crc, &value, 1);
 	if (value == HDLC_FRAME || value == HDLC_ESC) {
 		*bcfserial->tx_tail++ = HDLC_ESC;
 		value ^= HDLC_XOR;
@@ -146,7 +116,9 @@ static void bcfserial_append_tx_le16(struct bcfserial *bcfserial, u16 value)
 
 static void bcfserial_append_tx_crc(struct bcfserial *bcfserial)
 {
-	bcfserial_append_tx_le16(bcfserial, bcfserial->tx_crc);
+	bcfserial->tx_crc ^= 0xffff;
+	bcfserial_append_tx_u8(bcfserial, bcfserial->tx_crc & 0xff);
+	bcfserial_append_tx_u8(bcfserial, (bcfserial->tx_crc >> 8) & 0xff);
 }
 
 static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, u16 index, u16 length, const u8* buffer)
@@ -196,9 +168,10 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 		bcfserial->tx_remaining -= written;
 
 		// TODO move to TX ACK handler
-		if (bcfserial->tx_remaining <= 0) {
+		if (bcfserial->tx_remaining <= 0 && bcfserial->tx_buffer[4] == TX) {
 			ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
  		}
+
 	}
 	spin_unlock(&bcfserial->tx_lock);
 }
@@ -225,8 +198,6 @@ static void bcfserial_stop(struct ieee802154_hw *hw)
 	bcfserial_hdlc_send_cmd(bcfserial, STOP);
 }
 
-// TODO call ieee802154_xmit_complete after good tx ack
-
 static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
 	struct bcfserial *bcfserial = hw->priv;
@@ -248,13 +219,13 @@ static int bcfserial_ed(struct ieee802154_hw *hw, u8 *level)
 
 static int bcfserial_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 {
-	printk("SET CHANNEL\n");
+	printk("SET CHANNEL %u %u\n", page, channel);
 	return 0;
 }
 
 static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
-			       	      struct ieee802154_hw_addr_filt *filt,
-			       	      unsigned long changed)
+				      struct ieee802154_hw_addr_filt *filt,
+				      unsigned long changed)
 {
 	printk("HW ADDR\n");
 	return 0;
@@ -319,6 +290,143 @@ static const struct ieee802154_ops bcfserial_ops = {
 	.set_csma_params	= bcfserial_set_csma_params,
 	.set_frame_retries	= bcfserial_set_frame_retries,
 	.set_promiscuous_mode	= bcfserial_set_promiscuous_mode,
+};
+
+static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, size_t count)
+{
+	// TODO Handle get capabilities blocking
+
+	if (count == 1) {
+		// TX ACK
+		//dev_dbg(&udev->dev, "seq 0x%02x expect 0x%02x\n", seq, expect);
+		printk("TX ACK: 0x%02x:0x%02x\n", buffer[1], bcfserial->tx_ack_seq);
+
+		if (buffer[0] == bcfserial->tx_ack_seq) {
+			ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
+		} else {
+			//dev_dbg(&udev->dev, "unknown ack %u\n", seq);
+
+			ieee802154_wake_queue(bcfserial->hw);
+			if (bcfserial->tx_skb)
+				dev_kfree_skb_irq(bcfserial->tx_skb);
+		}
+	} else {
+		// RX Packet
+		printk("RX Packet Len:%u LQI:%u\n", buffer[0], buffer[count-1]);
+	}
+}
+
+static int bcfserial_tty_receive(struct serdev_device *serdev, 
+	const unsigned char *data, size_t count)
+{
+	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
+	u16 crc_check = 0;
+	u16 abort_size = 0;
+	size_t i;
+	u8 c;
+
+	for (i = 0; i < count; i++) {
+		c = data[i];
+	
+		if (c == HDLC_FRAME) {
+			if (bcfserial->rx_address != 0xFF) {
+
+				bcfserial->rx_crc = crc_ccitt(0xffff, &bcfserial->rx_address, 1);
+				bcfserial->rx_crc = crc_ccitt(bcfserial->rx_crc, bcfserial->rx_buffer, bcfserial->rx_offset);
+
+				if (crc_check == 0xf0b8) {
+					printk("RX HDLC: %u:%u \n", bcfserial->rx_address, bcfserial->rx_offset - 3);
+					// TODO send ACK packet - contention?
+
+					// if ((bcfserial->rx_buffer[0] & 1) == 0) {
+					// //I-Frame, send S-Frame ACK
+					// USBWPAN_sendAck(bcfserial->rx_address, (bcfserial->rx_buffer[0] >> 1) & 0x7);
+
+					if (bcfserial->rx_address == ADDRESS_WPAN) {
+						// if (USBWPAN_getInterfaceStatus(WPAN0_INTFNUM) & USBWPAN_WAITING_FOR_SEND) {
+						// 	USBWPAN_abortSend(&abort_size, WPAN0_INTFNUM);
+						// }
+						// USBWPAN_sendData(bcfserial->rx_buffer+1, bcfserial->rx_offset-3, WPAN0_INTFNUM);
+						bcfserial_wpan_rx(bcfserial, bcfserial->rx_buffer + 1, bcfserial->rx_offset - 3);
+					}
+					else if (bcfserial->rx_address == ADDRESS_CDC) {
+						// if (USBCDC_getInterfaceStatus(CDC0_INTFNUM,&bytesSent,&bytesReceived) & USBCDC_WAITING_FOR_SEND) {
+						// 	USBCDC_abortSend(&abort_size, CDC0_INTFNUM);
+						// }
+						// USBCDC_sendData(bcfserial->rx_buffer+1, bcfserial->rx_offset - 3, CDC0_INTFNUM);
+					}
+				}
+				else {
+					printk("CRC Failed: 0x%04x\n", crc_check);
+				}
+			}
+			bcfserial->rx_offset = 0;
+			bcfserial->rx_address = 0xFF;
+		} else if (c == HDLC_ESC) {
+			inEsc = TRUE;
+		} else {
+			if (inEsc) {
+				c ^= 0x20;
+				inEsc = FALSE;
+			}
+
+			if (bcfserial->rx_address == 0xFF) {
+				bcfserial->rx_address = c;
+				if (bcfserial->rx_address == ADDRESS_WPAN || 
+				   bcfserial->rx_address == ADDRESS_CDC ||
+				   bcfserial->rx_address == ADDRESS_HW) {
+				} else {
+					bcfserial->rx_address = 0xFF;
+				}
+					bcfserial->rx_offset = 0;
+			} else {
+				if (bcfserial->rx_offset < BUFFER_SIZE) {
+					bcfserial->rx_buffer[bcfserial->rx_offset] = c;
+					bcfserial->rx_offset++;
+				} else {
+					//buffer overflow
+					bcfserial->rx_address = 0xFF;
+					bcfserial->rx_offset = 0;
+				}
+			}
+		}
+	}
+}
+
+static void bcfserial_uart_transmit(struct work_struct *work)
+{
+	struct bcfserial *bcfserial = container_of(work, struct bcfserial, tx_work);
+	int written;
+
+	spin_lock_bh(&bcfserial->tx_lock);
+
+	if (bcfserial->tx_remaining) {
+		written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_head,
+					  bcfserial->tx_remaining);
+		if (written > 0) {
+			printk("Work sent %d\n", written);
+			bcfserial->tx_head += written;
+			bcfserial->tx_remaining -= written;
+
+			// TODO move to TX ACK handler
+			if (bcfserial->tx_remaining <= 0 && bcfserial->tx_buffer[4] == TX) {
+				ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
+ 			}
+		}
+	}
+	spin_unlock_bh(&bcfserial->tx_lock);
+}
+
+static void bcfserial_tty_wakeup(struct serdev_device *serdev)
+{
+	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
+
+	schedule_work(&bcfserial->tx_work);
+}
+
+static struct serdev_device_ops bcfserial_serdev_ops = {
+	.receive_buf = bcfserial_tty_receive,
+	.write_wakeup = bcfserial_tty_wakeup,
 };
 
 static const struct of_device_id bcfserial_of_match[] = {
@@ -393,6 +501,9 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	spin_lock_init(&bcfserial->tx_lock);
 	bcfserial->tx_buffer = devm_kmalloc(&serdev->dev, MAX_TX_HDLC, GFP_KERNEL);
 	bcfserial->tx_remaining = 0;
+	bcfserial->rx_buffer = devm_kmalloc(&serdev->dev, MAX_RX_HDLC, GFP_KERNEL);
+	bcfserial->rx_offset = 0;
+	bcfserial->rx_address = 0xff;
 	return 0;
 
 fail:
