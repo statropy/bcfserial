@@ -86,8 +86,7 @@ struct bcfserial {
 // TX Packet Format:
 
 
-// TODO Add HDLC parsing and packing
-// - explore using ieee802154_wake_queue in bcfserial_uart_transmit (see qca)
+// TODO 
 // - Always require ACK? (not supported correctly in wpanusb_bc)
 
 static void bcfserial_serdev_write_locked(struct bcfserial *bcfserial)
@@ -494,7 +493,7 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	bcfserial->tx_circ_buf.head = 0;
 	bcfserial->tx_circ_buf.tail = 0;
 	bcfserial->tx_circ_buf.buf = devm_kmalloc(&serdev->dev, TX_CIRC_BUF_SIZE, GFP_KERNEL);
-	//bcfserial->tx_remaining = 0;
+
 	bcfserial->rx_buffer = devm_kmalloc(&serdev->dev, MAX_RX_HDLC, GFP_KERNEL);
 	bcfserial->rx_offset = 0;
 	bcfserial->rx_address = 0xff;
