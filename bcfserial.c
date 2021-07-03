@@ -1,9 +1,10 @@
 
 /*
- *  bcfserial.c - Serial interface driver for Beagle Connect Freedom.
+ *  bcfserial.c - Serial interface driver for BeagleConnect Freedom.
  */
 #include <linux/circ_buf.h>
 #include <linux/crc-ccitt.h>
+#include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -70,12 +71,6 @@ struct bcfserial {
 	u16 tx_crc;
 	u8 tx_ack_seq;		/* current TX ACK sequence number */
 
-	// u8 *tx_head;
-	// u8 *tx_tail;
-	// int tx_remaining;
-	// u8 *tx_buffer;
-	
-
 	u8 rx_in_esc;
 	u8 rx_address;
 	u16 rx_offset;
@@ -95,14 +90,29 @@ struct bcfserial {
 // - explore using ieee802154_wake_queue in bcfserial_uart_transmit (see qca)
 // - Always require ACK? (not supported correctly in wpanusb_bc)
 
+static void bcfserial_serdev_write_locked(struct bcfserial *bcfserial)
+{
+	//must be locked already
+	int head = smp_load_acquire(bcfserial->tx_circ_buf.head);
+	int tail = bcfserial->tx_circ_buf.tail;
+	int count = CIRC_CNT_TO_END(head, tail, TX_CIRC_BUF_SIZE);
+	int written;
+
+	if (count >= 1) {
+		written = serdev_device_write_buf(bcfserial->serdev, &bcfserial->tx_circ_buf.buffer[tail], count);
+
+		smp_store_release(bcfserial->tx_circ_buf.tail, (tail + written) & (TX_CIRC_BUF_SIZE - 1));
+	}
+}
+
 static void bcfserial_append(struct bcfserial *bcfserial, u8 value)
 {
 	//must be locked already
-	unsigned long head = bcfserial->tx_circ_buf.head;
+	int head = bcfserial->tx_circ_buf.head;
 
 	while(true)
 	{
-		unsigned long tail = READ_ONCE(bcfserial->tx_circ_buf.tail);
+		int tail = READ_ONCE(bcfserial->tx_circ_buf.tail);
 
 		if (CIRC_SPACE(head, tail, TX_CIRC_BUF_SIZE) >= 1) {
 
@@ -110,18 +120,17 @@ static void bcfserial_append(struct bcfserial *bcfserial, u8 value)
 
 			smp_store_release(bcfserial->tx_circ_buf.head,
 					  (head + 1) & (TX_CIRC_BUF_SIZE - 1));
-
-			/* wake_up() will make sure that the head is committed before
-			 * waking anyone up */
-			// wake_up(consumer);
 			return;
+		} else {
+			printk("Tx circ buf full\n");
+			usleep_range(3000,5000);
 		}
 	}
 }
 
 static void bcfserial_append_tx_frame(struct bcfserial *bcfserial)
 {
-	// *bcfserial->tx_tail++ = HDLC_FRAME;
+	bcfserial->tx_crc = 0xFFFF;
 	bcfserial_append(bcfserial, HDLC_FRAME);
 }
 
@@ -129,12 +138,10 @@ static void bcfserial_append_tx_u8(struct bcfserial *bcfserial, u8 value)
 {
 	bcfserial->tx_crc = crc_ccitt(bcfserial->tx_crc, &value, 1);
 	if (value == HDLC_FRAME || value == HDLC_ESC) {
-		// *bcfserial->tx_tail++ = HDLC_ESC;
 		bcfserial_append(bcfserial, HDLC_ESC);
 		value ^= HDLC_XOR;
 	}
 	bcfserial_append(bcfserial, value);
-	// *bcfserial->tx_tail++ = value;
 }
 
 static void bcfserial_append_tx_buffer(struct bcfserial *bcfserial, const u8 *buffer, size_t len)
@@ -173,13 +180,7 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 	// x/y crc
 	// HDLC_FRAME
 
-	spin_lock(&bcfserial->tx_lock);
-	WARN_ON(bcfserial->tx_remaining);
-
-	bcfserial->tx_remaining = 0;
-	bcfserial->tx_head = bcfserial->tx_buffer;
-	bcfserial->tx_tail = bcfserial->tx_head;
-	bcfserial->tx_crc = 0xFFFF;
+	spin_lock(&bcfserial->tx_producer_lock);
 
 	bcfserial_append_tx_frame(bcfserial);
 	bcfserial_append_tx_u8(bcfserial, 0x01); //address
@@ -193,27 +194,13 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 	bcfserial_append_tx_crc(bcfserial);
 	bcfserial_append_tx_frame(bcfserial);
 
+	spin_unlock(&bcfserial->tx_producer_lock);
 
-	// call _stop_queue here and resume when done?
-	
-	bcfserial->tx_remaining = bcfserial->tx_tail - bcfserial->tx_head;
-	written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_buffer,
-					  bcfserial->tx_remaining);
+	spin_lock(&bcfserial->tx_consumer_lock);
+	bcfserial_serdev_write_locked(bcfserial);
+	spin_unlock(&bcfserial->tx_consumer_lock);
 
-	printk("Sending %d\n", bcfserial->tx_remaining);
-
-	if (written > 0) {
-		printk("Sent %d\n", written);
-		bcfserial->tx_head += written;
-		bcfserial->tx_remaining -= written;
-
-		// TODO move to TX ACK handler
-		if (bcfserial->tx_remaining <= 0 && bcfserial->tx_buffer[4] == TX) {
-			ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
- 		}
-
-	}
-	spin_unlock(&bcfserial->tx_lock);
+	// call 802154 _stop_queue here and resume when done?
 }
 
 static void bcfserial_hdlc_send_cmd(struct bcfserial *bcfserial, u8 cmd)
@@ -248,6 +235,9 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 	bcfserial->tx_ack_seq++;
 
 	bcfserial_hdlc_send(bcfserial, TX, 0, bcfserial->tx_ack_seq, skb->len, skb->data);
+	//TODO: Move to TX ACK Handler
+	ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
+
 	return 0;
 }
 
@@ -435,25 +425,10 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 static void bcfserial_uart_transmit(struct work_struct *work)
 {
 	struct bcfserial *bcfserial = container_of(work, struct bcfserial, tx_work);
-	int written;
 
-	spin_lock_bh(&bcfserial->tx_lock);
-
-	if (bcfserial->tx_remaining) {
-		written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_head,
-					  bcfserial->tx_remaining);
-		if (written > 0) {
-			printk("Work sent %d\n", written);
-			bcfserial->tx_head += written;
-			bcfserial->tx_remaining -= written;
-
-			// TODO move to TX ACK handler
-			if (bcfserial->tx_remaining <= 0 && bcfserial->tx_buffer[4] == TX) {
-				ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
- 			}
-		}
-	}
-	spin_unlock_bh(&bcfserial->tx_lock);
+	spin_lock_bh(&bcfserial->tx_consumer_lock);
+	bcfserial_serdev_write_locked(bcfserial);
+	spin_unlock_bh(&bcfserial->tx_consumer_lock);
 }
 
 static void bcfserial_tty_wakeup(struct serdev_device *serdev)
