@@ -93,15 +93,15 @@ struct bcfserial {
 static void bcfserial_serdev_write_locked(struct bcfserial *bcfserial)
 {
 	//must be locked already
-	int head = smp_load_acquire(bcfserial->tx_circ_buf.head);
+	int head = smp_load_acquire(&bcfserial->tx_circ_buf.head);
 	int tail = bcfserial->tx_circ_buf.tail;
 	int count = CIRC_CNT_TO_END(head, tail, TX_CIRC_BUF_SIZE);
 	int written;
 
 	if (count >= 1) {
-		written = serdev_device_write_buf(bcfserial->serdev, &bcfserial->tx_circ_buf.buffer[tail], count);
+		written = serdev_device_write_buf(bcfserial->serdev, &bcfserial->tx_circ_buf.buf[tail], count);
 
-		smp_store_release(bcfserial->tx_circ_buf.tail, (tail + written) & (TX_CIRC_BUF_SIZE - 1));
+		smp_store_release(&(bcfserial->tx_circ_buf.tail), (tail + written) & (TX_CIRC_BUF_SIZE - 1));
 	}
 }
 
@@ -118,7 +118,7 @@ static void bcfserial_append(struct bcfserial *bcfserial, u8 value)
 
 			bcfserial->tx_circ_buf.buf[head] = value;
 
-			smp_store_release(bcfserial->tx_circ_buf.head,
+			smp_store_release(&(bcfserial->tx_circ_buf.head),
 					  (head + 1) & (TX_CIRC_BUF_SIZE - 1));
 			return;
 		} else {
@@ -167,7 +167,6 @@ static void bcfserial_append_tx_crc(struct bcfserial *bcfserial)
 
 static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, u16 index, u16 length, const u8* buffer)
 {
-	int written;
 	// HDLC_FRAME
 	// 0 address : 0x01
 	// 1 control : 0x03
