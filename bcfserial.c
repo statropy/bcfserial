@@ -234,8 +234,6 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 	bcfserial->tx_ack_seq++;
 
 	bcfserial_hdlc_send(bcfserial, TX, 0, bcfserial->tx_ack_seq, skb->len, skb->data);
-	//TODO: Move to TX ACK Handler
-	ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
 
 	return 0;
 }
@@ -328,7 +326,7 @@ static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, siz
 	if (count == 1) {
 		// TX ACK
 		//dev_dbg(&udev->dev, "seq 0x%02x expect 0x%02x\n", seq, expect);
-		printk("TX ACK: 0x%02x:0x%02x\n", buffer[1], bcfserial->tx_ack_seq);
+		printk("TX ACK: 0x%02x:0x%02x\n", buffer[0], bcfserial->tx_ack_seq);
 
 		if (buffer[0] == bcfserial->tx_ack_seq) {
 			ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
