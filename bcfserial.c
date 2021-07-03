@@ -26,6 +26,7 @@
 #define ADDRESS_CTRL	0x01
 #define ADDRESS_WPAN	0x03
 #define ADDRESS_CDC	0x05
+#define ADDRESS_HW	0x41
 
 #define MAX_PSDU		127
 #define MAX_RX_XFER		(1 + MAX_PSDU + 2 + 1)	/* PHR+PSDU+CRC+LQI */
@@ -88,6 +89,9 @@ struct bcfserial {
 
 // TODO 
 // - Always require ACK? (not supported correctly in wpanusb_bc)
+// - On device startup, HW Address message with control 0
+// send HDLC message with control bit-1 set to 0
+// - ctrl byte set to 0 on rx, must send i-frame ack
 
 static void bcfserial_serdev_write_locked(struct bcfserial *bcfserial)
 {
@@ -204,6 +208,32 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 static void bcfserial_hdlc_send_cmd(struct bcfserial *bcfserial, u8 cmd)
 {
 	bcfserial_hdlc_send(bcfserial, cmd, 0, 0, 0, NULL);
+}
+
+static void bcfserial_hdlc_send_ack(struct bcfserial *bcfserial, u8 address, u8 seq)
+{
+	// uint8_t seq = (send_seq + 1) & 0x07;
+	// CRC_setSeed(CRC_BASE, 0xffff);
+	// sendFrameByte();
+	// sendInCrc(address);
+	// sendInCrc((seq << 5) & 0x1); //S-Frame ACK <== BUG! Always 0
+	// sendCrc();
+	// sendFrameByte();
+	// TODO Fix control frame type bug here and in wpanusb_bc
+
+	spin_lock(&bcfserial->tx_producer_lock);
+
+	bcfserial_append_tx_frame(bcfserial);
+	bcfserial_append_tx_u8(bcfserial, address); //address
+	bcfserial_append_tx_u8(bcfserial, 0x00); //control
+	bcfserial_append_tx_crc(bcfserial);
+	bcfserial_append_tx_frame(bcfserial);
+
+	spin_unlock(&bcfserial->tx_producer_lock);
+
+	spin_lock(&bcfserial->tx_consumer_lock);
+	bcfserial_serdev_write_locked(bcfserial);
+	spin_unlock(&bcfserial->tx_consumer_lock);
 }
 
 // TODO Add implementations for 802154 functions
@@ -362,9 +392,11 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 				if (crc_check == 0xf0b8) {
 					// TODO send ACK packet - contention?
 
-					// if ((bcfserial->rx_buffer[0] & 1) == 0) {
-					// //I-Frame, send S-Frame ACK
-					// USBWPAN_sendAck(bcfserial->rx_address, (bcfserial->rx_buffer[0] >> 1) & 0x7);
+					if ((bcfserial->rx_buffer[0] & 1) == 0) {
+						//I-Frame, send S-Frame ACK
+						// USBWPAN_sendAck(bcfserial->rx_address, (bcfserial->rx_buffer[0] >> 1) & 0x7);
+						bcfserial_hdlc_send_ack(bcfserial, bcfserial->rx_address, (bcfserial->rx_buffer[0] >> 1) & 0x7);
+					}
 
 					if (bcfserial->rx_address == ADDRESS_WPAN) {
 						// if (USBWPAN_getInterfaceStatus(WPAN0_INTFNUM) & USBWPAN_WAITING_FOR_SEND) {
