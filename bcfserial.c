@@ -89,9 +89,6 @@ struct bcfserial {
 
 // TODO 
 // - Always require ACK? (not supported correctly in wpanusb_bc)
-// - On device startup, HW Address message with control 0
-// send HDLC message with control bit-1 set to 0
-// - ctrl byte set to 0 on rx, must send i-frame ack
 
 static void bcfserial_serdev_write_locked(struct bcfserial *bcfserial)
 {
@@ -212,13 +209,8 @@ static void bcfserial_hdlc_send_cmd(struct bcfserial *bcfserial, u8 cmd)
 
 static void bcfserial_hdlc_send_ack(struct bcfserial *bcfserial, u8 address, u8 seq)
 {
-	// uint8_t seq = (send_seq + 1) & 0x07;
-	// CRC_setSeed(CRC_BASE, 0xffff);
-	// sendFrameByte();
-	// sendInCrc(address);
-	// sendInCrc((seq << 5) & 0x1); //S-Frame ACK <== BUG! Always 0
-	// sendCrc();
-	// sendFrameByte();
+	// To make this a valid S-frame:
+	// u8 ctrl = (((seq + 1) & 0x07) << 5) | 0x01;
 	// TODO Fix control frame type bug here and in wpanusb_bc
 
 	spin_lock(&bcfserial->tx_producer_lock);
