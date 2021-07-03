@@ -2,6 +2,7 @@
 /*
  *  bcfserial.c - Serial interface driver for Beagle Connect Freedom.
  */
+#include <linux/circ_buf.h>
 #include <linux/crc-ccitt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -33,6 +34,7 @@
 #define RX_HDLC_PAYLOAD		140
 #define MAX_TX_HDLC		(1 + HDLC_HEADER_LEN + PACKET_HEADER_LEN + MAX_RX_XFER + CRC_LEN + 1)
 #define MAX_RX_HDLC		(1 + RX_HDLC_PAYLOAD + CRC_LEN)
+#define TX_CIRC_BUF_SIZE	1024
 
 enum bcfserial_requests {
 	RESET,
@@ -61,14 +63,18 @@ struct bcfserial {
 	struct ieee802154_hw *hw;
 
 	struct work_struct tx_work;
-	spinlock_t tx_lock;
+	spinlock_t tx_producer_lock;
+	spinlock_t tx_consumer_lock;
+	struct circ_buf tx_circ_buf;
 	struct sk_buff *tx_skb;
-	u8 tx_ack_seq;		/* current TX ACK sequence number */
-	u8 *tx_head;
-	u8 *tx_tail;
-	int tx_remaining;
-	u8 *tx_buffer;
 	u16 tx_crc;
+	u8 tx_ack_seq;		/* current TX ACK sequence number */
+
+	// u8 *tx_head;
+	// u8 *tx_tail;
+	// int tx_remaining;
+	// u8 *tx_buffer;
+	
 
 	u8 rx_in_esc;
 	u8 rx_address;
@@ -89,19 +95,46 @@ struct bcfserial {
 // - explore using ieee802154_wake_queue in bcfserial_uart_transmit (see qca)
 // - Always require ACK? (not supported correctly in wpanusb_bc)
 
+static void bcfserial_append(struct bcfserial *bcfserial, u8 value)
+{
+	//must be locked already
+	unsigned long head = bcfserial->tx_circ_buf.head;
+
+	while(true)
+	{
+		unsigned long tail = READ_ONCE(bcfserial->tx_circ_buf.tail);
+
+		if (CIRC_SPACE(head, tail, TX_CIRC_BUF_SIZE) >= 1) {
+
+			bcfserial->tx_circ_buf.buf[head] = value;
+
+			smp_store_release(bcfserial->tx_circ_buf.head,
+					  (head + 1) & (TX_CIRC_BUF_SIZE - 1));
+
+			/* wake_up() will make sure that the head is committed before
+			 * waking anyone up */
+			// wake_up(consumer);
+			return;
+		}
+	}
+}
+
 static void bcfserial_append_tx_frame(struct bcfserial *bcfserial)
 {
-	*bcfserial->tx_tail++ = HDLC_FRAME;
+	// *bcfserial->tx_tail++ = HDLC_FRAME;
+	bcfserial_append(bcfserial, HDLC_FRAME);
 }
 
 static void bcfserial_append_tx_u8(struct bcfserial *bcfserial, u8 value)
 {
 	bcfserial->tx_crc = crc_ccitt(bcfserial->tx_crc, &value, 1);
 	if (value == HDLC_FRAME || value == HDLC_ESC) {
-		*bcfserial->tx_tail++ = HDLC_ESC;
+		// *bcfserial->tx_tail++ = HDLC_ESC;
+		bcfserial_append(bcfserial, HDLC_ESC);
 		value ^= HDLC_XOR;
 	}
-	*bcfserial->tx_tail++ = value;
+	bcfserial_append(bcfserial, value);
+	// *bcfserial->tx_tail++ = value;
 }
 
 static void bcfserial_append_tx_buffer(struct bcfserial *bcfserial, const u8 *buffer, size_t len)
@@ -160,6 +193,9 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 	bcfserial_append_tx_crc(bcfserial);
 	bcfserial_append_tx_frame(bcfserial);
 
+
+	// call _stop_queue here and resume when done?
+	
 	bcfserial->tx_remaining = bcfserial->tx_tail - bcfserial->tx_head;
 	written = serdev_device_write_buf(bcfserial->serdev, bcfserial->tx_buffer,
 					  bcfserial->tx_remaining);
@@ -481,6 +517,17 @@ static int bcfserial_probe(struct serdev_device *serdev)
 
 	serdev_device_set_flow_control(serdev, false);
 
+	spin_lock_init(&bcfserial->tx_producer_lock);
+	spin_lock_init(&bcfserial->tx_consumer_lock);
+	bcfserial->tx_circ_buf.head = 0;
+	bcfserial->tx_circ_buf.tail = 0;
+	bcfserial->tx_circ_buf.buf = devm_kmalloc(&serdev->dev, TX_CIRC_BUF_SIZE, GFP_KERNEL);
+	//bcfserial->tx_remaining = 0;
+	bcfserial->rx_buffer = devm_kmalloc(&serdev->dev, MAX_RX_HDLC, GFP_KERNEL);
+	bcfserial->rx_offset = 0;
+	bcfserial->rx_address = 0xff;
+	bcfserial->rx_in_esc = 0;
+
 	// TODO connect with BeagleConnect Freedom using serial cmds
 	hw->flags = IEEE802154_HW_TX_OMIT_CKSUM | IEEE802154_HW_AFILT;
 
@@ -501,13 +548,6 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	if (ret)
 		goto fail;
 
-	spin_lock_init(&bcfserial->tx_lock);
-	bcfserial->tx_buffer = devm_kmalloc(&serdev->dev, MAX_TX_HDLC, GFP_KERNEL);
-	bcfserial->tx_remaining = 0;
-	bcfserial->rx_buffer = devm_kmalloc(&serdev->dev, MAX_RX_HDLC, GFP_KERNEL);
-	bcfserial->rx_offset = 0;
-	bcfserial->rx_address = 0xff;
-	bcfserial->rx_in_esc = 0;
 	return 0;
 
 fail:
