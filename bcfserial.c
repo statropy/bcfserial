@@ -26,6 +26,7 @@
 #define ADDRESS_CTRL	0x01
 #define ADDRESS_WPAN	0x03
 #define ADDRESS_CDC	0x05
+#define ADDRESS_HW	0x41
 
 #define MAX_PSDU		127
 #define MAX_RX_XFER		(1 + MAX_PSDU + 2 + 1)	/* PHR+PSDU+CRC+LQI */
@@ -206,6 +207,27 @@ static void bcfserial_hdlc_send_cmd(struct bcfserial *bcfserial, u8 cmd)
 	bcfserial_hdlc_send(bcfserial, cmd, 0, 0, 0, NULL);
 }
 
+static void bcfserial_hdlc_send_ack(struct bcfserial *bcfserial, u8 address, u8 seq)
+{
+	// To make this a valid S-frame:
+	// u8 ctrl = (((seq + 1) & 0x07) << 5) | 0x01;
+	// TODO Fix control frame type bug here and in wpanusb_bc
+
+	spin_lock(&bcfserial->tx_producer_lock);
+
+	bcfserial_append_tx_frame(bcfserial);
+	bcfserial_append_tx_u8(bcfserial, address); //address
+	bcfserial_append_tx_u8(bcfserial, 0x00); //control
+	bcfserial_append_tx_crc(bcfserial);
+	bcfserial_append_tx_frame(bcfserial);
+
+	spin_unlock(&bcfserial->tx_producer_lock);
+
+	spin_lock(&bcfserial->tx_consumer_lock);
+	bcfserial_serdev_write_locked(bcfserial);
+	spin_unlock(&bcfserial->tx_consumer_lock);
+}
+
 // TODO Add implementations for 802154 functions
 
 static int bcfserial_start(struct ieee802154_hw *hw)
@@ -360,24 +382,16 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 				crc_check = crc_ccitt(crc_check, bcfserial->rx_buffer, bcfserial->rx_offset);
 
 				if (crc_check == 0xf0b8) {
-					// TODO send ACK packet - contention?
-
-					// if ((bcfserial->rx_buffer[0] & 1) == 0) {
-					// //I-Frame, send S-Frame ACK
-					// USBWPAN_sendAck(bcfserial->rx_address, (bcfserial->rx_buffer[0] >> 1) & 0x7);
+					if ((bcfserial->rx_buffer[0] & 1) == 0) {
+						//I-Frame, send S-Frame ACK
+						bcfserial_hdlc_send_ack(bcfserial, bcfserial->rx_address, (bcfserial->rx_buffer[0] >> 1) & 0x7);
+					}
 
 					if (bcfserial->rx_address == ADDRESS_WPAN) {
-						// if (USBWPAN_getInterfaceStatus(WPAN0_INTFNUM) & USBWPAN_WAITING_FOR_SEND) {
-						// 	USBWPAN_abortSend(&abort_size, WPAN0_INTFNUM);
-						// }
-						// USBWPAN_sendData(bcfserial->rx_buffer+1, bcfserial->rx_offset-3, WPAN0_INTFNUM);
 						bcfserial_wpan_rx(bcfserial, bcfserial->rx_buffer + 1, bcfserial->rx_offset - 3);
 					}
 					else if (bcfserial->rx_address == ADDRESS_CDC) {
-						// if (USBCDC_getInterfaceStatus(CDC0_INTFNUM,&bytesSent,&bytesReceived) & USBCDC_WAITING_FOR_SEND) {
-						// 	USBCDC_abortSend(&abort_size, CDC0_INTFNUM);
-						// }
-						// USBCDC_sendData(bcfserial->rx_buffer+1, bcfserial->rx_offset - 3, CDC0_INTFNUM);
+						//TODO Log
 					}
 				}
 				else {
@@ -397,7 +411,8 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 			if (bcfserial->rx_address == 0xFF) {
 				bcfserial->rx_address = c;
 				if (bcfserial->rx_address == ADDRESS_WPAN ||
-				   bcfserial->rx_address == ADDRESS_CDC) {
+				   bcfserial->rx_address == ADDRESS_CDC ||
+				   bcfserial->rx_address == ADDRESS_HW) {
 				} else {
 					bcfserial->rx_address = 0xFF;
 				}
