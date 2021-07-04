@@ -372,6 +372,9 @@ static const struct ieee802154_ops bcfserial_ops = {
 
 static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, size_t count)
 {
+	struct sk_buff *skb;
+	u8 len, lqi;
+
 	if (count == 1) {
 		// TX ACK
 		//dev_dbg(&udev->dev, "seq 0x%02x expect 0x%02x\n", seq, expect);
@@ -394,6 +397,27 @@ static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, siz
 	} else {
 		// RX Packet
 		printk("RX Packet Len:%u LQI:%u\n", buffer[0], buffer[count-1]);
+		len = buffer[0];
+		lqi = buffer[count-1];
+
+		if (len+2 != count) {
+			printk("RX Packet invalid length\n");
+			return;
+		}
+
+		if (!ieee802154_is_valid_psdu_len(len)) {
+			printk("frame corrupted\n");
+			return;
+		}
+
+		skb = dev_alloc_skb(IEEE802154_MTU);
+		if (!skb) {
+			printk("failed to allocate sk_buff\n");
+			return;
+		}
+
+		skb_put_data(skb, buffer+1, len);
+		ieee802154_rx_irqsafe(bcfserial->hw, skb, lqi);
 	}
 }
 
