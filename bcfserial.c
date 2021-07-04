@@ -243,8 +243,6 @@ static void bcfserial_hdlc_receive(struct bcfserial *bcfserial, u8 cmd, void *bu
 	bcfserial->response_buffer = NULL;
 }
 
-// TODO Add implementations for 802154 functions
-
 static int bcfserial_start(struct ieee802154_hw *hw)
 {
 	struct bcfserial *bcfserial = hw->priv;
@@ -277,12 +275,16 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 static int bcfserial_ed(struct ieee802154_hw *hw, u8 *level)
 {
 	printk("ED\n");
+	WARN_ON(!level);
+	*level = 0xbe;
 	return 0;
 }
 
 static int bcfserial_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 {
+	u8 buffer[2] = {page, channel};
 	printk("SET CHANNEL %u %u\n", page, channel);
+	bcfserial_hdlc_send(bcfserial, SET_CHANNEL, 0, 0, 2, &buffer);
 	return 0;
 }
 
@@ -290,52 +292,68 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 				      struct ieee802154_hw_addr_filt *filt,
 				      unsigned long changed)
 {
-	printk("HW ADDR %lx\n", changed);
+	if (changed & IEEE802154_AFILT_SADDR_CHANGED) {
+		u16 addr = le16_to_cpu(filt->short_addr);
+		printk("Short Address changed %x\n", addr);
+		bcfserial_hdlc_send(bcfserial, SET_SHORT_ADDR, 0, 0, sizeof(addr), &addr);
+	}
+
+	if (changed & IEEE802154_AFILT_PANID_CHANGED) {
+		u16 pan = le16_to_cpu(filt->pan_id);
+		printk("PAN ID changed %x\n", pan);
+		bcfserial_hdlc_send(bcfserial, SET_PAN_ID, 0, 0, sizeof(pan), &pan);
+	}
+
+	if (changed & IEEE802154_AFILT_IEEEADDR_CHANGED) {
+		u64 ieee_addr = le64_to_cpu(filt->ieee_addr)
+		printk("IEEE Addr changed %lx\n", ieee_addr);
+		bcfserial_hdlc_send(bcfserial, SET_IEEE_ADDR, 0, 0, sizeof(ieee_addr), &ieee_addr);
+	}
 	return 0;
 }
 
 static int bcfserial_set_txpower(struct ieee802154_hw *hw, s32 mbm)
 {
 	printk("SET TXPOWER\n");
-	return 0;
+	return -ENOTSUPP;
 }
 
 static int bcfserial_set_lbt(struct ieee802154_hw *hw, bool on)
 {
 	printk("SET LBT\n");
-	return 0;
+	return -ENOTSUPP;
 }
 
 static int bcfserial_set_cca_mode(struct ieee802154_hw *hw,
 			   const struct wpan_phy_cca *cca)
 {
 	printk("SET CCA MODE\n");
-	return 0;
+	return -ENOTSUPP;
 }
 
 static int bcfserial_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 {
 	printk("SET CCA ED LEVEL\n");
-	return 0;
+	return -ENOTSUPP;
 }
 
 static int bcfserial_set_csma_params(struct ieee802154_hw *hw, u8 min_be, u8 max_be,
 			      u8 retries)
 {
 	printk("SET CSMA PARAMS\n");
-	return 0;
+	return -ENOTSUPP;
 }
 
 static int bcfserial_set_frame_retries(struct ieee802154_hw *hw, s8 retries)
 {
 	printk("SET FRAME RETRIES\n");
-	return 0;
+	return -ENOTSUPP;
 }
 
 static int bcfserial_set_promiscuous_mode(struct ieee802154_hw *hw, const bool on)
 {
 	printk("SET PROMISCUOUS\n");
-	return 0;
+	return -ENOTSUPP;
 }
 
 static const struct ieee802154_ops bcfserial_ops = {
@@ -565,7 +583,6 @@ static int bcfserial_probe(struct serdev_device *serdev)
 
 	serdev_device_set_flow_control(serdev, false);
 
-	// TODO RESET and connect
 	bcfserial_hdlc_send_ack(bcfserial, 0x41, 0x00);
 
 	ret = bcfserial_get_device_capabilities(bcfserial);
