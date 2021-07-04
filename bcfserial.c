@@ -290,7 +290,7 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 				      struct ieee802154_hw_addr_filt *filt,
 				      unsigned long changed)
 {
-	printk("HW ADDR\n");
+	printk("HW ADDR %lx\n", changed);
 	return 0;
 }
 
@@ -566,6 +566,7 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	serdev_device_set_flow_control(serdev, false);
 
 	// TODO RESET and connect
+	bcfserial_hdlc_send_ack(bcfserial, 0x41, 0x00);
 
 	ret = bcfserial_get_device_capabilities(bcfserial);
 
