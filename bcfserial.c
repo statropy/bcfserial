@@ -87,12 +87,6 @@ struct bcfserial {
 // - WPAN CAPABILITIES:	supported_channels_mask(4)
 // - CDC:		printable_chars
 
-// TX Packet Format:
-
-
-// TODO 
-// - Always require ACK? (not supported correctly in wpanusb_bc)
-
 static void bcfserial_serdev_write_locked(struct bcfserial *bcfserial)
 {
 	//must be locked already
@@ -282,6 +276,7 @@ static int bcfserial_ed(struct ieee802154_hw *hw, u8 *level)
 
 static int bcfserial_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	u8 buffer[2] = {page, channel};
 	printk("SET CHANNEL %u %u\n", page, channel);
 	bcfserial_hdlc_send(bcfserial, SET_CHANNEL, 0, 0, 2, &buffer);
@@ -292,6 +287,8 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 				      struct ieee802154_hw_addr_filt *filt,
 				      unsigned long changed)
 {
+	struct bcfserial *bcfserial = hw->priv;
+
 	if (changed & IEEE802154_AFILT_SADDR_CHANGED) {
 		u16 addr = le16_to_cpu(filt->short_addr);
 		printk("Short Address changed %x\n", addr);
@@ -305,8 +302,8 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 	}
 
 	if (changed & IEEE802154_AFILT_IEEEADDR_CHANGED) {
-		u64 ieee_addr = le64_to_cpu(filt->ieee_addr)
-		printk("IEEE Addr changed %lx\n", ieee_addr);
+		u64 ieee_addr = le64_to_cpu(filt->ieee_addr);
+		printk("IEEE Addr changed %llx\n", ieee_addr);
 		bcfserial_hdlc_send(bcfserial, SET_IEEE_ADDR, 0, 0, sizeof(ieee_addr), &ieee_addr);
 	}
 	return 0;
