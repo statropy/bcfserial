@@ -72,6 +72,9 @@ struct bcfserial {
 	u16 tx_crc;
 	u8 tx_ack_seq;		/* current TX ACK sequence number */
 
+	size_t response_size;
+	u8 *response_buffer;
+
 	u8 rx_in_esc;
 	u8 rx_address;
 	u16 rx_offset;
@@ -144,11 +147,11 @@ static void bcfserial_append_tx_u8(struct bcfserial *bcfserial, u8 value)
 	bcfserial_append(bcfserial, value);
 }
 
-static void bcfserial_append_tx_buffer(struct bcfserial *bcfserial, const u8 *buffer, size_t len)
+static void bcfserial_append_tx_buffer(struct bcfserial *bcfserial, const void *buffer, size_t len)
 {
 	size_t i;
 	for (i=0; i<len; i++) {
-		bcfserial_append_tx_u8(bcfserial, buffer[i]);
+		bcfserial_append_tx_u8(bcfserial, ((u8*)buffer)[i]);
 	}
 }
 
@@ -165,7 +168,7 @@ static void bcfserial_append_tx_crc(struct bcfserial *bcfserial)
 	bcfserial_append_tx_u8(bcfserial, (bcfserial->tx_crc >> 8) & 0xff);
 }
 
-static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, u16 index, u16 length, const u8* buffer)
+static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, u16 index, u16 length, const void* buffer)
 {
 	// HDLC_FRAME
 	// 0 address : 0x01
@@ -228,6 +231,18 @@ static void bcfserial_hdlc_send_ack(struct bcfserial *bcfserial, u8 address, u8 
 	spin_unlock(&bcfserial->tx_consumer_lock);
 }
 
+static void bcfserial_hdlc_receive(struct bcfserial *bcfserial, u8 cmd, void *buffer, size_t count)
+{
+	bcfserial->response_size = count;
+	bcfserial->response_buffer = (u8*)buffer;
+	bcfserial_hdlc_send_cmd(bcfserial, cmd);
+	// TODO semaphore? give/take 
+	do {
+		usleep_range(1000,2000);
+	} while (bcfserial->response_size);
+	bcfserial->response_buffer = NULL;
+}
+
 // TODO Add implementations for 802154 functions
 
 static int bcfserial_start(struct ieee802154_hw *hw)
@@ -275,7 +290,7 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 				      struct ieee802154_hw_addr_filt *filt,
 				      unsigned long changed)
 {
-	printk("HW ADDR\n");
+	printk("HW ADDR %lx\n", changed);
 	return 0;
 }
 
@@ -342,8 +357,6 @@ static const struct ieee802154_ops bcfserial_ops = {
 
 static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, size_t count)
 {
-	// TODO Handle get capabilities blocking
-
 	if (count == 1) {
 		// TX ACK
 		//dev_dbg(&udev->dev, "seq 0x%02x expect 0x%02x\n", seq, expect);
@@ -358,6 +371,11 @@ static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, siz
 			if (bcfserial->tx_skb)
 				dev_kfree_skb_irq(bcfserial->tx_skb);
 		}
+	} else if (bcfserial->response_size == count && bcfserial->response_buffer) {
+		//TODO replace with semaphore
+		printk("Response size %u found\n", count);
+		memcpy(bcfserial->response_buffer, buffer, count);
+		bcfserial->response_size = 0;
 	} else {
 		// RX Packet
 		printk("RX Packet Len:%u LQI:%u\n", buffer[0], buffer[count-1]);
@@ -467,6 +485,41 @@ static const s32 channel_powers[] = {
 	-900, -1200, -1700,
 };
 
+static int bcfserial_get_device_capabilities(struct bcfserial *bcfserial)
+{
+	u32 valid_channels = 0;
+	int ret = 0;
+	struct ieee802154_hw *hw = bcfserial->hw;
+
+	// TODO Add GET_EXTENDED_ADDR support
+	bcfserial_hdlc_send_cmd(bcfserial, RESET);
+
+	ieee802154_random_extended_addr(&bcfserial->hw->phy->perm_extended_addr);
+	bcfserial_hdlc_send(bcfserial, SET_IEEE_ADDR, 0, 0, sizeof(__le64), &bcfserial->hw->phy->perm_extended_addr);
+	printk("Set IEEE Addr: %08llx\n", bcfserial->hw->phy->perm_extended_addr);
+
+	bcfserial_hdlc_receive(bcfserial, GET_SUPPORTED_CHANNELS, &valid_channels, sizeof(valid_channels));
+	printk("Supported Channels %x\n", valid_channels);
+
+	/* FIXME: these need to come from device capabilities */
+	hw->flags = IEEE802154_HW_TX_OMIT_CKSUM | IEEE802154_HW_AFILT;
+
+	/* FIXME: these need to come from device capabilities */
+	hw->phy->flags = WPAN_PHY_FLAG_TXPOWER;
+
+	/* Set default and supported channels */
+	hw->phy->current_page = 0;
+	hw->phy->current_channel = ffs(valid_channels) - 1; //set to lowest valid channel
+	hw->phy->supported.channels[0] = valid_channels;
+
+	/* FIXME: these need to come from device capabilities */
+	hw->phy->supported.tx_powers = channel_powers;
+	hw->phy->supported.tx_powers_size = ARRAY_SIZE(channel_powers);
+	hw->phy->transmit_power = hw->phy->supported.tx_powers[0];
+
+	return ret;
+}
+
 static int bcfserial_probe(struct serdev_device *serdev)
 {
 	struct ieee802154_hw *hw;
@@ -487,22 +540,6 @@ static int bcfserial_probe(struct serdev_device *serdev)
 
 	INIT_WORK(&bcfserial->tx_work, bcfserial_uart_transmit);
 
-	serdev_device_set_drvdata(serdev, bcfserial);
-	serdev_device_set_client_ops(serdev, &bcfserial_serdev_ops);
-
-	ret = serdev_device_open(serdev);
-	if (ret) {
-		printk("Unable to open device\n");
-		goto fail_hw;
-	}
-
-	serdev_device_set_drvdata(serdev, bcfserial);
-
-	speed = serdev_device_set_baudrate(serdev, speed);
-	printk("Using baudrate %u\n", speed);
-
-	serdev_device_set_flow_control(serdev, false);
-
 	spin_lock_init(&bcfserial->tx_producer_lock);
 	spin_lock_init(&bcfserial->tx_consumer_lock);
 	bcfserial->tx_circ_buf.head = 0;
@@ -514,21 +551,30 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	bcfserial->rx_address = 0xff;
 	bcfserial->rx_in_esc = 0;
 
-	// TODO connect with BeagleConnect Freedom using serial cmds
-	hw->flags = IEEE802154_HW_TX_OMIT_CKSUM | IEEE802154_HW_AFILT;
+	serdev_device_set_drvdata(serdev, bcfserial);
+	serdev_device_set_client_ops(serdev, &bcfserial_serdev_ops);
 
-	/* FIXME: these need to come from device capabilities */
-	hw->phy->flags = WPAN_PHY_FLAG_TXPOWER;
+	ret = serdev_device_open(serdev);
+	if (ret) {
+		printk("Unable to open device\n");
+		goto fail_hw;
+	}
 
-	/* Set default and supported channels */
-	hw->phy->current_page = 0;
-	hw->phy->current_channel = 1; //set to lowest valid channel
-	hw->phy->supported.channels[0] = 0x07FFFFFF;
+	speed = serdev_device_set_baudrate(serdev, speed);
+	printk("Using baudrate %u\n", speed);
 
-	/* FIXME: these need to come from device capabilities */
-	hw->phy->supported.tx_powers = channel_powers;
-	hw->phy->supported.tx_powers_size = ARRAY_SIZE(channel_powers);
-	hw->phy->transmit_power = hw->phy->supported.tx_powers[0];
+	serdev_device_set_flow_control(serdev, false);
+
+	// TODO RESET and connect
+	bcfserial_hdlc_send_ack(bcfserial, 0x41, 0x00);
+
+	ret = bcfserial_get_device_capabilities(bcfserial);
+
+	if (ret < 0) {
+		// dev_err(&udev->dev, "Failed to get device capabilities");
+		printk("Failed to get device capabilities\n");
+		goto fail;
+	}
 
 	ret = ieee802154_register_hw(hw);
 	if (ret)
