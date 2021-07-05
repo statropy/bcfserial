@@ -131,14 +131,19 @@ static void bcfserial_append_tx_frame(struct bcfserial *bcfserial)
 	bcfserial_append(bcfserial, HDLC_FRAME);
 }
 
+static void bcfserial_append_escaped(struct bcfserial *bcfserial, u8 value)
+{
+        if (value == HDLC_FRAME || value == HDLC_ESC) {
+                bcfserial_append(bcfserial, HDLC_ESC);
+                value ^= HDLC_XOR;
+        }
+        bcfserial_append(bcfserial, value);
+}
+
 static void bcfserial_append_tx_u8(struct bcfserial *bcfserial, u8 value)
 {
 	bcfserial->tx_crc = crc_ccitt(bcfserial->tx_crc, &value, 1);
-	if (value == HDLC_FRAME || value == HDLC_ESC) {
-		bcfserial_append(bcfserial, HDLC_ESC);
-		value ^= HDLC_XOR;
-	}
-	bcfserial_append(bcfserial, value);
+	bcfserial_append_escaped(bcfserial, value);
 }
 
 static void bcfserial_append_tx_buffer(struct bcfserial *bcfserial, const void *buffer, size_t len)
@@ -158,8 +163,8 @@ static void bcfserial_append_tx_le16(struct bcfserial *bcfserial, u16 value)
 static void bcfserial_append_tx_crc(struct bcfserial *bcfserial)
 {
 	bcfserial->tx_crc ^= 0xffff;
-	bcfserial_append_tx_u8(bcfserial, bcfserial->tx_crc & 0xff);
-	bcfserial_append_tx_u8(bcfserial, (bcfserial->tx_crc >> 8) & 0xff);
+	bcfserial_append_escaped(bcfserial, bcfserial->tx_crc & 0xff);
+	bcfserial_append_escaped(bcfserial, (bcfserial->tx_crc >> 8) & 0xff);
 }
 
 static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, u16 index, u16 length, const void* buffer)
@@ -448,7 +453,8 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 						bcfserial_wpan_rx(bcfserial, bcfserial->rx_buffer + 1, bcfserial->rx_offset - 3);
 					}
 					else if (bcfserial->rx_address == ADDRESS_CDC) {
-						//TODO Log
+						bcfserial->rx_buffer[bcfserial->rx_offset-2] = 0;
+						printk("> %s", bcfserial->rx_buffer+1);
 					}
 				}
 				else {
@@ -530,12 +536,7 @@ static int bcfserial_get_device_capabilities(struct bcfserial *bcfserial)
 	int ret = 0;
 	struct ieee802154_hw *hw = bcfserial->hw;
 
-	// TODO Add GET_EXTENDED_ADDR support
 	bcfserial_hdlc_send_cmd(bcfserial, RESET);
-
-	ieee802154_random_extended_addr(&bcfserial->hw->phy->perm_extended_addr);
-	bcfserial_hdlc_send(bcfserial, SET_IEEE_ADDR, 0, 0, sizeof(__le64), &bcfserial->hw->phy->perm_extended_addr);
-	printk("Set IEEE Addr: %08llx\n", bcfserial->hw->phy->perm_extended_addr);
 
 	bcfserial_hdlc_receive(bcfserial, GET_SUPPORTED_CHANNELS, &valid_channels, sizeof(valid_channels));
 	printk("Supported Channels %x\n", valid_channels);
