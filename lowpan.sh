@@ -2,8 +2,8 @@
 
 PHY=`iwpan phy | grep -m1 wpan_phy | cut -d' ' -f2`
 
-INSTANCE=${1:-1}
-CHAN=${2:-20}
+INSTANCE=${1:-2}
+CHAN=${2:-26}
 PAN=${3:-0xabcd}
 IP_ADDR=2001:db8::$INSTANCE/64
 SHORT_ADDR=0xbee$INSTANCE
