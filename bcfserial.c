@@ -16,6 +16,8 @@
 #include <net/cfg802154.h>
 #include <net/mac802154.h>
 
+#define DEBUG
+
 #define BCFSERIAL_DRV_VERSION "0.1.0"
 #define BCFSERIAL_DRV_NAME "bcfserial"
 
@@ -273,6 +275,7 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 
 static int bcfserial_ed(struct ieee802154_hw *hw, u8 *level)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	dev_dbg(&bcfserial->serdev->dev, "ED\n");
 	WARN_ON(!level);
 	*level = 0xbe;
@@ -316,12 +319,14 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 
 static int bcfserial_set_txpower(struct ieee802154_hw *hw, s32 mbm)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	dev_dbg(&bcfserial->serdev->dev, "SET TXPOWER\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_lbt(struct ieee802154_hw *hw, bool on)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	dev_dbg(&bcfserial->serdev->dev, "SET LBT\n");
 	return -ENOTSUPP;
 }
@@ -329,12 +334,14 @@ static int bcfserial_set_lbt(struct ieee802154_hw *hw, bool on)
 static int bcfserial_set_cca_mode(struct ieee802154_hw *hw,
 			   const struct wpan_phy_cca *cca)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	dev_dbg(&bcfserial->serdev->dev, "SET CCA MODE\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	dev_dbg(&bcfserial->serdev->dev, "SET CCA ED LEVEL\n");
 	return -ENOTSUPP;
 }
@@ -342,18 +349,21 @@ static int bcfserial_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 static int bcfserial_set_csma_params(struct ieee802154_hw *hw, u8 min_be, u8 max_be,
 			      u8 retries)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	dev_dbg(&bcfserial->serdev->dev, "SET CSMA PARAMS\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_frame_retries(struct ieee802154_hw *hw, s8 retries)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	dev_dbg(&bcfserial->serdev->dev, "SET FRAME RETRIES\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_promiscuous_mode(struct ieee802154_hw *hw, const bool on)
 {
+	struct bcfserial *bcfserial = hw->priv;
 	dev_dbg(&bcfserial->serdev->dev, "SET PROMISCUOUS\n");
 	return -ENOTSUPP;
 }
@@ -458,7 +468,7 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 					}
 				}
 				else {
-					dev_err(&bcfserial->serdev->dev, "CRC Failed: 0x%04x\n", crc_check);
+					dev_err(&bcfserial->serdev->dev, "CRC Failed from %02x: 0x%04x\n", bcfserial->rx_address, crc_check);
 				}
 			}
 			bcfserial->rx_offset = 0;
