@@ -119,7 +119,7 @@ static void bcfserial_append(struct bcfserial *bcfserial, u8 value)
 					  (head + 1) & (TX_CIRC_BUF_SIZE - 1));
 			return;
 		} else {
-			printk("Tx circ buf full\n");
+			dev_dbg(&bcfserial->serdev->dev, "Tx circ buf full\n");
 			usleep_range(3000,5000);
 		}
 	}
@@ -245,7 +245,7 @@ static void bcfserial_hdlc_receive(struct bcfserial *bcfserial, u8 cmd, void *bu
 static int bcfserial_start(struct ieee802154_hw *hw)
 {
 	struct bcfserial *bcfserial = hw->priv;
-	printk("START\n");
+	dev_dbg(&bcfserial->serdev->dev, "START\n");
 	bcfserial_hdlc_send_cmd(bcfserial, START);
 	return 0;
 }
@@ -253,7 +253,7 @@ static int bcfserial_start(struct ieee802154_hw *hw)
 static void bcfserial_stop(struct ieee802154_hw *hw)
 {
 	struct bcfserial *bcfserial = hw->priv;
-	printk("STOP\n");
+	dev_dbg(&bcfserial->serdev->dev, "STOP\n");
 	bcfserial_hdlc_send_cmd(bcfserial, STOP);
 }
 
@@ -261,7 +261,7 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
 	struct bcfserial *bcfserial = hw->priv;
 
-	printk("XMIT\n");
+	dev_dbg(&bcfserial->serdev->dev, "XMIT\n");
 
 	bcfserial->tx_skb = skb;
 	bcfserial->tx_ack_seq++;
@@ -273,7 +273,7 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 
 static int bcfserial_ed(struct ieee802154_hw *hw, u8 *level)
 {
-	printk("ED\n");
+	dev_dbg(&bcfserial->serdev->dev, "ED\n");
 	WARN_ON(!level);
 	*level = 0xbe;
 	return 0;
@@ -283,7 +283,7 @@ static int bcfserial_set_channel(struct ieee802154_hw *hw, u8 page, u8 channel)
 {
 	struct bcfserial *bcfserial = hw->priv;
 	u8 buffer[2] = {page, channel};
-	printk("SET CHANNEL %u %u\n", page, channel);
+	dev_dbg(&bcfserial->serdev->dev, "SET CHANNEL %u %u\n", page, channel);
 	bcfserial_hdlc_send(bcfserial, SET_CHANNEL, 0, 0, 2, &buffer);
 	return 0;
 }
@@ -296,19 +296,19 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 
 	if (changed & IEEE802154_AFILT_SADDR_CHANGED) {
 		u16 addr = le16_to_cpu(filt->short_addr);
-		printk("Short Address changed %x\n", addr);
+		dev_dbg(&bcfserial->serdev->dev, "Short Address changed %x\n", addr);
 		bcfserial_hdlc_send(bcfserial, SET_SHORT_ADDR, 0, 0, sizeof(addr), &addr);
 	}
 
 	if (changed & IEEE802154_AFILT_PANID_CHANGED) {
 		u16 pan = le16_to_cpu(filt->pan_id);
-		printk("PAN ID changed %x\n", pan);
+		dev_dbg(&bcfserial->serdev->dev, "PAN ID changed %x\n", pan);
 		bcfserial_hdlc_send(bcfserial, SET_PAN_ID, 0, 0, sizeof(pan), &pan);
 	}
 
 	if (changed & IEEE802154_AFILT_IEEEADDR_CHANGED) {
 		u64 ieee_addr = le64_to_cpu(filt->ieee_addr);
-		printk("IEEE Addr changed %llx\n", ieee_addr);
+		dev_dbg(&bcfserial->serdev->dev, "IEEE Addr changed %llx\n", ieee_addr);
 		bcfserial_hdlc_send(bcfserial, SET_IEEE_ADDR, 0, 0, sizeof(ieee_addr), &ieee_addr);
 	}
 	return 0;
@@ -316,45 +316,45 @@ static int bcfserial_set_hw_addr_filt(struct ieee802154_hw *hw,
 
 static int bcfserial_set_txpower(struct ieee802154_hw *hw, s32 mbm)
 {
-	printk("SET TXPOWER\n");
+	dev_dbg(&bcfserial->serdev->dev, "SET TXPOWER\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_lbt(struct ieee802154_hw *hw, bool on)
 {
-	printk("SET LBT\n");
+	dev_dbg(&bcfserial->serdev->dev, "SET LBT\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_cca_mode(struct ieee802154_hw *hw,
 			   const struct wpan_phy_cca *cca)
 {
-	printk("SET CCA MODE\n");
+	dev_dbg(&bcfserial->serdev->dev, "SET CCA MODE\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_cca_ed_level(struct ieee802154_hw *hw, s32 mbm)
 {
-	printk("SET CCA ED LEVEL\n");
+	dev_dbg(&bcfserial->serdev->dev, "SET CCA ED LEVEL\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_csma_params(struct ieee802154_hw *hw, u8 min_be, u8 max_be,
 			      u8 retries)
 {
-	printk("SET CSMA PARAMS\n");
+	dev_dbg(&bcfserial->serdev->dev, "SET CSMA PARAMS\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_frame_retries(struct ieee802154_hw *hw, s8 retries)
 {
-	printk("SET FRAME RETRIES\n");
+	dev_dbg(&bcfserial->serdev->dev, "SET FRAME RETRIES\n");
 	return -ENOTSUPP;
 }
 
 static int bcfserial_set_promiscuous_mode(struct ieee802154_hw *hw, const bool on)
 {
-	printk("SET PROMISCUOUS\n");
+	dev_dbg(&bcfserial->serdev->dev, "SET PROMISCUOUS\n");
 	return -ENOTSUPP;
 }
 
@@ -383,7 +383,7 @@ static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, siz
 	if (count == 1) {
 		// TX ACK
 		//dev_dbg(&udev->dev, "seq 0x%02x expect 0x%02x\n", seq, expect);
-		printk("TX ACK: 0x%02x:0x%02x\n", buffer[0], bcfserial->tx_ack_seq);
+		dev_dbg(&bcfserial->serdev->dev, "TX ACK: 0x%02x:0x%02x\n", buffer[0], bcfserial->tx_ack_seq);
 
 		if (buffer[0] == bcfserial->tx_ack_seq) {
 			ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
@@ -396,28 +396,28 @@ static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, siz
 		}
 	} else if (bcfserial->response_size == count && bcfserial->response_buffer) {
 		//TODO replace with semaphore
-		printk("Response size %u found\n", count);
+		dev_dbg(&bcfserial->serdev->dev, "Response size %u found\n", count);
 		memcpy(bcfserial->response_buffer, buffer, count);
 		bcfserial->response_size = 0;
 	} else {
 		// RX Packet
-		printk("RX Packet Len:%u LQI:%u\n", buffer[0], buffer[count-1]);
+		dev_dbg(&bcfserial->serdev->dev, "RX Packet Len:%u LQI:%u\n", buffer[0], buffer[count-1]);
 		len = buffer[0];
 		lqi = buffer[count-1];
 
 		if (len+2 != count) {
-			printk("RX Packet invalid length\n");
+			dev_err(&bcfserial->serdev->dev, "RX Packet invalid length\n");
 			return;
 		}
 
 		if (!ieee802154_is_valid_psdu_len(len)) {
-			printk("frame corrupted\n");
+			dev_err(&bcfserial->serdev->dev, "frame corrupted\n");
 			return;
 		}
 
 		skb = dev_alloc_skb(IEEE802154_MTU);
 		if (!skb) {
-			printk("failed to allocate sk_buff\n");
+			dev_err(&bcfserial->serdev->dev, "failed to allocate sk_buff\n");
 			return;
 		}
 
@@ -458,7 +458,7 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 					}
 				}
 				else {
-					printk("CRC Failed: 0x%04x\n", crc_check);
+					dev_err(&bcfserial->serdev->dev, "CRC Failed: 0x%04x\n", crc_check);
 				}
 			}
 			bcfserial->rx_offset = 0;
@@ -539,7 +539,7 @@ static int bcfserial_get_device_capabilities(struct bcfserial *bcfserial)
 	bcfserial_hdlc_send_cmd(bcfserial, RESET);
 
 	bcfserial_hdlc_receive(bcfserial, GET_SUPPORTED_CHANNELS, &valid_channels, sizeof(valid_channels));
-	printk("Supported Channels %x\n", valid_channels);
+	dev_dbg(&bcfserial->serdev->dev, "Supported Channels %x\n", valid_channels);
 
 	/* FIXME: these need to come from device capabilities */
 	hw->flags = IEEE802154_HW_TX_OMIT_CKSUM | IEEE802154_HW_AFILT;
@@ -566,8 +566,6 @@ static int bcfserial_probe(struct serdev_device *serdev)
 	struct bcfserial *bcfserial = NULL;
 	u32 speed = 115200;
 	int ret;
-
-	printk("Loading bcfserial\n");
 
 	hw = ieee802154_alloc_hw(sizeof(struct bcfserial), &bcfserial_ops);
 	if (!hw)
@@ -596,12 +594,12 @@ static int bcfserial_probe(struct serdev_device *serdev)
 
 	ret = serdev_device_open(serdev);
 	if (ret) {
-		printk("Unable to open device\n");
+		dev_err(&bcfserial->serdev->dev, "Unable to open device\n");
 		goto fail_hw;
 	}
 
 	speed = serdev_device_set_baudrate(serdev, speed);
-	printk("Using baudrate %u\n", speed);
+	dev_dbg(&bcfserial->serdev->dev, "Using baudrate %u\n", speed);
 
 	serdev_device_set_flow_control(serdev, false);
 
@@ -611,21 +609,23 @@ static int bcfserial_probe(struct serdev_device *serdev)
 
 	if (ret < 0) {
 		// dev_err(&udev->dev, "Failed to get device capabilities");
-		printk("Failed to get device capabilities\n");
+		dev_err(&bcfserial->serdev->dev, "Failed to get device capabilities\n");
 		goto fail;
 	}
 
 	ret = ieee802154_register_hw(hw);
+
+	dev_info(&bcfserial->serdev->dev, "bcfserial started");
 	if (ret)
 		goto fail;
 
 	return 0;
 
 fail:
-	printk("Closing serial device on failure\n");
+	dev_err(&bcfserial->serdev->dev, "Closing serial device on failure\n");
 	serdev_device_close(serdev);
 fail_hw:
-	printk("Closing wpan hw on failure\n");
+	dev_err(&bcfserial->serdev->dev, "Closing wpan hw on failure\n");
 	ieee802154_free_hw(hw);
 	return ret;
 }
@@ -633,7 +633,7 @@ fail_hw:
 static void bcfserial_remove(struct serdev_device *serdev)
 {
 	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
-	printk("Closing serial device\n");
+	dev_info(&bcfserial->serdev->dev, "Closing serial device\n");
 	cancel_work_sync(&bcfserial->tx_work);
 	serdev_device_close(serdev);
 	ieee802154_unregister_hw(bcfserial->hw);
