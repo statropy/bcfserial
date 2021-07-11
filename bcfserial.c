@@ -12,6 +12,7 @@
 #include <linux/serdev.h>
 #include <linux/sched.h>
 #include <linux/skbuff.h>
+#include <linux/timer.h>
 
 #include <net/cfg802154.h>
 #include <net/mac802154.h>
@@ -73,6 +74,7 @@ struct bcfserial {
 	struct sk_buff *tx_skb;
 	u16 tx_crc;
 	u8 tx_ack_seq;		/* current TX ACK sequence number */
+	struct timer_list ack_timer;
 
 	size_t response_size;
 	u8 *response_buffer;
@@ -230,16 +232,23 @@ static void bcfserial_hdlc_send_ack(struct bcfserial *bcfserial, u8 address, u8 
 	spin_unlock(&bcfserial->tx_consumer_lock);
 }
 
-static void bcfserial_hdlc_receive(struct bcfserial *bcfserial, u8 cmd, void *buffer, size_t count)
+static int bcfserial_hdlc_receive(struct bcfserial *bcfserial, u8 cmd, void *buffer, size_t count)
 {
+	size_t retries = 500;
 	bcfserial->response_size = count;
 	bcfserial->response_buffer = (u8*)buffer;
 	bcfserial_hdlc_send_cmd(bcfserial, cmd);
-	// TODO semaphore? give/take 
 	do {
-		usleep_range(1000,2000);
-	} while (bcfserial->response_size);
+		//msleep(10);
+		usleep_range(10000,10010);
+		//printk(".");
+	} while(bcfserial->response_size && retries-- > 0);
 	bcfserial->response_buffer = NULL;
+	if (bcfserial->response_size) {
+		bcfserial->response_size = 0;
+		return -EIO;
+	}
+	return 0;
 }
 
 static int bcfserial_start(struct ieee802154_hw *hw)
@@ -273,6 +282,8 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 	}
 
 	dev_dbg(&bcfserial->serdev->dev, "XMIT %02x %d\n", bcfserial->tx_ack_seq, skb->len);
+
+//	mod_timer(&bcfserial->ack_timer, jiffies + (5*HZ));
 
 	bcfserial_hdlc_send(bcfserial, TX, 0, bcfserial->tx_ack_seq, skb->len, skb->data);
 
@@ -391,16 +402,32 @@ static const struct ieee802154_ops bcfserial_ops = {
 	.set_promiscuous_mode	= bcfserial_set_promiscuous_mode,
 };
 
+static void ack_timer_callback(struct timer_list *timer)
+{
+	struct bcfserial *bcfserial = container_of(timer, struct bcfserial, ack_timer);
+	printk("TO\n");
+	if (bcfserial->tx_skb)
+	{
+		dev_err(&bcfserial->serdev->dev, "Failed to ACK %02x\n", bcfserial->tx_ack_seq);
+		dev_kfree_skb_irq(bcfserial->tx_skb);
+		bcfserial->tx_skb = NULL;
+		ieee802154_wake_queue(bcfserial->hw);
+	}
+}
+
 static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, size_t count)
 {
 	struct sk_buff *skb;
 	u8 len, lqi;
+
+//	printk("WPAN RX\n");
 
 	if (count == 1) {
 		// TX ACK
 		dev_dbg(&bcfserial->serdev->dev, "TX ACK: 0x%02x:0x%02x\n", buffer[0], bcfserial->tx_ack_seq);
 
 		if (buffer[0] == bcfserial->tx_ack_seq && bcfserial->tx_skb) {
+			//del_timer_sync(&bcfserial->ack_timer);
 			skb = bcfserial->tx_skb;
 			bcfserial->tx_skb = NULL;
 			ieee802154_xmit_complete(bcfserial->hw, skb, false);
@@ -546,13 +573,18 @@ static const s32 channel_powers[] = {
 
 static int bcfserial_get_device_capabilities(struct bcfserial *bcfserial)
 {
-	u32 valid_channels = 0;
+	u32 valid_channels = 0x7FFF800;
 	int ret = 0;
 	struct ieee802154_hw *hw = bcfserial->hw;
 
 	bcfserial_hdlc_send_cmd(bcfserial, RESET);
 
-	bcfserial_hdlc_receive(bcfserial, GET_SUPPORTED_CHANNELS, &valid_channels, sizeof(valid_channels));
+	ret = bcfserial_hdlc_receive(bcfserial, GET_SUPPORTED_CHANNELS, &valid_channels, sizeof(valid_channels));
+	if (ret) {
+		ret = 0;
+		dev_err(&bcfserial->serdev->dev, "Device not responding\n");
+		//return ret;
+	}
 	dev_dbg(&bcfserial->serdev->dev, "Supported Channels %x\n", valid_channels);
 
 	/* FIXME: these need to come from device capabilities */
@@ -621,18 +653,19 @@ static int bcfserial_probe(struct serdev_device *serdev)
 
 	ret = bcfserial_get_device_capabilities(bcfserial);
 
-	if (ret < 0) {
-		// dev_err(&udev->dev, "Failed to get device capabilities");
+	if (ret) {
 		dev_err(&bcfserial->serdev->dev, "Failed to get device capabilities\n");
 		goto fail;
 	}
 
 	ret = ieee802154_register_hw(hw);
 
-	dev_info(&bcfserial->serdev->dev, "bcfserial started");
 	if (ret)
 		goto fail;
 
+//	timer_setup(&bcfserial->ack_timer, ack_timer_callback, 0);
+
+	dev_info(&bcfserial->serdev->dev, "bcfserial started");
 	return 0;
 
 fail:
@@ -649,8 +682,8 @@ static void bcfserial_remove(struct serdev_device *serdev)
 	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
 	dev_info(&bcfserial->serdev->dev, "Closing serial device\n");
 	ieee802154_unregister_hw(bcfserial->hw);
-	//cancel_work_sync(&bcfserial->tx_work);
 	flush_work(&bcfserial->tx_work);
+	//del_timer_sync(&bcfserial->ack_timer);
 	ieee802154_free_hw(bcfserial->hw);
 	serdev_device_close(serdev);
 }
