@@ -202,8 +202,6 @@ static void bcfserial_hdlc_send(struct bcfserial *bcfserial, u8 cmd, u16 value, 
 	spin_lock(&bcfserial->tx_consumer_lock);
 	bcfserial_serdev_write_locked(bcfserial);
 	spin_unlock(&bcfserial->tx_consumer_lock);
-
-	// call 802154 _stop_queue here and resume when done?
 }
 
 static void bcfserial_hdlc_send_cmd(struct bcfserial *bcfserial, u8 cmd)
@@ -263,10 +261,18 @@ static int bcfserial_xmit(struct ieee802154_hw *hw, struct sk_buff *skb)
 {
 	struct bcfserial *bcfserial = hw->priv;
 
-	dev_dbg(&bcfserial->serdev->dev, "XMIT\n");
+	if (bcfserial->tx_skb)
+	{
+		dev_err(&bcfserial->serdev->dev, "SKB not freed! %d\n", bcfserial->tx_ack_seq);
+	}
 
 	bcfserial->tx_skb = skb;
 	bcfserial->tx_ack_seq++;
+	if (!bcfserial->tx_ack_seq) {
+		bcfserial->tx_ack_seq++;
+	}
+
+	dev_dbg(&bcfserial->serdev->dev, "XMIT %02x %d\n", bcfserial->tx_ack_seq, skb->len);
 
 	bcfserial_hdlc_send(bcfserial, TX, 0, bcfserial->tx_ack_seq, skb->len, skb->data);
 
@@ -392,17 +398,14 @@ static void bcfserial_wpan_rx(struct bcfserial *bcfserial, const u8 *buffer, siz
 
 	if (count == 1) {
 		// TX ACK
-		//dev_dbg(&udev->dev, "seq 0x%02x expect 0x%02x\n", seq, expect);
 		dev_dbg(&bcfserial->serdev->dev, "TX ACK: 0x%02x:0x%02x\n", buffer[0], bcfserial->tx_ack_seq);
 
-		if (buffer[0] == bcfserial->tx_ack_seq) {
-			ieee802154_xmit_complete(bcfserial->hw, bcfserial->tx_skb, false);
+		if (buffer[0] == bcfserial->tx_ack_seq && bcfserial->tx_skb) {
+			skb = bcfserial->tx_skb;
+			bcfserial->tx_skb = NULL;
+			ieee802154_xmit_complete(bcfserial->hw, skb, false);
 		} else {
-			//dev_dbg(&udev->dev, "unknown ack %u\n", seq);
-
-			ieee802154_wake_queue(bcfserial->hw);
-			if (bcfserial->tx_skb)
-				dev_kfree_skb_irq(bcfserial->tx_skb);
+			dev_err(&bcfserial->serdev->dev, "unknown ack %u\n", bcfserial->tx_ack_seq);
 		}
 	} else if (bcfserial->response_size == count && bcfserial->response_buffer) {
 		//TODO replace with semaphore
@@ -496,6 +499,7 @@ static int bcfserial_tty_receive(struct serdev_device *serdev,
 					bcfserial->rx_offset++;
 				} else {
 					//buffer overflow
+					dev_err(&bcfserial->serdev->dev, "RX Buffer Overflow\n");
 					bcfserial->rx_address = 0xFF;
 					bcfserial->rx_offset = 0;
 				}
@@ -644,10 +648,11 @@ static void bcfserial_remove(struct serdev_device *serdev)
 {
 	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
 	dev_info(&bcfserial->serdev->dev, "Closing serial device\n");
-	cancel_work_sync(&bcfserial->tx_work);
-	serdev_device_close(serdev);
 	ieee802154_unregister_hw(bcfserial->hw);
+	//cancel_work_sync(&bcfserial->tx_work);
+	flush_work(&bcfserial->tx_work);
 	ieee802154_free_hw(bcfserial->hw);
+	serdev_device_close(serdev);
 }
 
 static struct serdev_device_driver bcfserial_driver = {
