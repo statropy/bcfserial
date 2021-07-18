@@ -230,16 +230,22 @@ static void bcfserial_hdlc_send_ack(struct bcfserial *bcfserial, u8 address, u8 
 	spin_unlock(&bcfserial->tx_consumer_lock);
 }
 
-static void bcfserial_hdlc_receive(struct bcfserial *bcfserial, u8 cmd, void *buffer, size_t count)
+static int bcfserial_hdlc_receive(struct bcfserial *bcfserial, u8 cmd, void *buffer, size_t count)
 {
+	int retries = 5;
 	bcfserial->response_size = count;
 	bcfserial->response_buffer = (u8*)buffer;
 	bcfserial_hdlc_send_cmd(bcfserial, cmd);
 	// TODO semaphore? give/take 
 	do {
-		usleep_range(1000,2000);
-	} while (bcfserial->response_size);
+		usleep_range(10000,10001);
+	} while (bcfserial->response_size && retries--);
 	bcfserial->response_buffer = NULL;
+	if (bcfserial->response_size) {
+		bcfserial->response_size = 0;
+		return -EAGAIN;
+	}
+	return 0;
 }
 
 static int bcfserial_start(struct ieee802154_hw *hw)
@@ -552,7 +558,10 @@ static int bcfserial_get_device_capabilities(struct bcfserial *bcfserial)
 
 	bcfserial_hdlc_send_cmd(bcfserial, RESET);
 
-	bcfserial_hdlc_receive(bcfserial, GET_SUPPORTED_CHANNELS, &valid_channels, sizeof(valid_channels));
+	ret = bcfserial_hdlc_receive(bcfserial, GET_SUPPORTED_CHANNELS, &valid_channels, sizeof(valid_channels));
+	if (ret < 0) {
+		return ret;
+	}
 	dev_dbg(&bcfserial->serdev->dev, "Supported Channels %x\n", valid_channels);
 
 	/* FIXME: these need to come from device capabilities */
@@ -639,7 +648,7 @@ fail:
 	dev_err(&bcfserial->serdev->dev, "Closing serial device on failure\n");
 	serdev_device_close(serdev);
 fail_hw:
-	dev_err(&bcfserial->serdev->dev, "Closing wpan hw on failure\n");
+	printk(KERN_ERR "Failed to open bcfserial\n");
 	ieee802154_free_hw(hw);
 	return ret;
 }
@@ -649,7 +658,6 @@ static void bcfserial_remove(struct serdev_device *serdev)
 	struct bcfserial *bcfserial = serdev_device_get_drvdata(serdev);
 	dev_info(&bcfserial->serdev->dev, "Closing serial device\n");
 	ieee802154_unregister_hw(bcfserial->hw);
-	//cancel_work_sync(&bcfserial->tx_work);
 	flush_work(&bcfserial->tx_work);
 	ieee802154_free_hw(bcfserial->hw);
 	serdev_device_close(serdev);
